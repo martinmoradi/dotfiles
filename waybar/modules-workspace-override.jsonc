@@ -1,0 +1,19 @@
+// Split-monitor-workspaces override for the workspace module.
+// This replaces the "hyprland/workspaces" block in modules.json.
+// Following the plugin's recommended waybar config.
+{
+  "hyprland/workspaces": {
+    "on-scroll-up": "hyprctl dispatch split-cycleworkspaces -1",
+    "on-scroll-down": "hyprctl dispatch split-cycleworkspaces +1",
+    "on-click": "activate",
+    "active-only": false,
+    "all-outputs": false,
+    "format": "{icon}",
+    "format-icons": {
+      "1": "1", "2": "2", "3": "3", "4": "4", "5": "5",
+      "6": "1", "7": "2", "8": "3", "9": "4", "10": "5",
+      "default": "",
+      "empty": ""
+    }
+  }
+}
