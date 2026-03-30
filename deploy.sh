@@ -59,15 +59,8 @@ with open('$WAYBAR_MODULES', 'w') as f:
     echo "  -> waybar/modules.json (workspace module patched, backup at modules.json.bak)"
 fi
 
-# Update hyprland plugin and reload
-echo "Updating split-monitor-workspaces plugin..."
-hyprpm update -n && echo "  -> hyprpm updated" || echo "  !! hyprpm update failed (may need sudo first time)"
-
-echo "Reloading hyprland..."
-hyprctl reload
-
-echo "Restarting waybar..."
-killall waybar 2>/dev/null; sleep 0.5
-~/.config/waybar/launch.sh &
-
-echo "Done. Restart kitty manually to apply terminal changes."
+echo ""
+echo "Done. To apply changes:"
+echo "  - Hyprland: Super+Shift+R to reload config (or hyprctl reload)"
+echo "  - Waybar:   Super+Shift+B to reload (or killall waybar && ~/.config/waybar/launch.sh &)"
+echo "  - Kitty:    restart the terminal manually"
