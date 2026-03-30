@@ -19,6 +19,11 @@ for f in "$DOTFILES"/fish/conf.d/*.fish; do
     echo "  -> fish/conf.d/$(basename "$f")"
 done
 
+# Sidepad: patched for multi-monitor absolute positioning
+cp "$DOTFILES/sidepad/sidepad" "$HOME/.config/sidepad/sidepad"
+chmod +x "$HOME/.config/sidepad/sidepad"
+echo "  -> sidepad/sidepad"
+
 # Waybar: patch workspace module in modules.json for split-monitor-workspaces
 WAYBAR_MODULES="$HOME/.config/waybar/modules.json"
 if [ -f "$WAYBAR_MODULES" ]; then
