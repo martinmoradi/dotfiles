@@ -27,9 +27,11 @@ if [ -d "$HOME/.config/Code/User" ]; then
     echo "  -> Code/User/settings.json"
 fi
 
-# Kitty custom config
+# Kitty custom config + custom tab bar drawer
 cp "$DOTFILES/kitty/custom.conf" "$HOME/.config/kitty/custom.conf"
 echo "  -> kitty/custom.conf"
+cp "$DOTFILES/kitty/tab_bar.py" "$HOME/.config/kitty/tab_bar.py"
+echo "  -> kitty/tab_bar.py"
 
 # Fish conf.d (only our 50-martin-* files, don't clobber ml4w's)
 for f in "$DOTFILES"/fish/conf.d/*.fish; do
