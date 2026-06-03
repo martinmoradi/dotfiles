@@ -10,7 +10,7 @@
 # taste — the comment names the icon.
 import os
 
-from kitty.tab_bar import draw_tab_with_slant
+from kitty.tab_bar import draw_tab_with_separator
 
 try:
     from kitty.boss import get_boss
@@ -73,6 +73,6 @@ def _detect(tab):
 def draw_tab(draw_data, screen, tab, before, max_tab_length, index, is_last, extra_data):
     icon, label = _detect(tab)
     tab = tab._replace(title=f" {index} {icon}  {label} ")
-    return draw_tab_with_slant(
+    return draw_tab_with_separator(
         draw_data, screen, tab, before, max_tab_length, index, is_last, extra_data
     )
