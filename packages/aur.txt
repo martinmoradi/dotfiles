@@ -1,0 +1,11 @@
+claude-desktop-bin
+geocode-glib-2
+geocode-glib-common
+google-chrome
+jack
+openai-codex-bin
+openai-codex-desktop
+python-pywalfox
+visual-studio-code-bin
+waypaper-git
+yaak-bin

@@ -1,0 +1,16 @@
+anthropic.claude-code
+astro-build.astro-vscode
+bradlc.vscode-tailwindcss
+cardinal90.multi-cursor-case-preserve
+eamodio.gitlens
+esbenp.prettier-vscode
+humao.rest-client
+liamhammett.inline-parameters
+ms-azuretools.vscode-containers
+ms-vscode-remote.remote-containers
+pkief.material-icon-theme
+prisma.prisma
+sdras.night-owl
+slevesque.shader
+tomoki1207.pdf
+usernamehw.errorlens

@@ -1,0 +1,172 @@
+{
+  // Editor settings
+  "editor.acceptSuggestionOnEnter": "off",
+  "editor.bracketPairColorization.enabled": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit",
+    "source.organizeImports": "never",
+  },
+  "editor.cursorBlinking": "smooth",
+  "editor.fontFamily": "MonoLisa",
+  "editor.fontLigatures": true,
+  "editor.fontSize": 18,
+  "editor.formatOnPaste": true,
+  "editor.formatOnSave": true,
+  "editor.guides.bracketPairs": true,
+  "editor.lineHeight": 26,
+  "editor.minimap.enabled": false,
+  "editor.multiCursorModifier": "ctrlCmd",
+  "editor.rulers": [80, 120],
+  "editor.snippetSuggestions": "top",
+  "editor.suggestSelection": "first",
+  "editor.tabSize": 2,
+  "editor.wordWrap": "on",
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.quickSuggestions": {
+    "strings": true,
+  },
+  "editor.inlineSuggest.enabled": true,
+  "color-highlight.markerType": "dot-before",
+
+  // Language-specific settings
+  "[html]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+  },
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+  },
+  "[prisma]": {
+    "editor.defaultFormatter": "Prisma.prisma",
+  },
+
+  // File settings
+  "files.associations": {
+    "*.erb": "erb",
+    "*.tsx": "typescriptreact",
+  },
+  "files.autoSave": "onFocusChange",
+  "files.insertFinalNewline": true,
+  "files.trimFinalNewlines": true,
+  "files.trimTrailingWhitespace": true,
+
+  // JavaScript and TypeScript settings
+  "javascript.autoClosingTags": true,
+  "javascript.updateImportsOnFileMove.enabled": "always",
+  "typescript.autoClosingTags": true,
+  "typescript.updateImportsOnFileMove.enabled": "always",
+  "typescript.suggest.autoImports": true,
+  "typescript.preferences.importModuleSpecifier": "non-relative",
+
+  // Terminal settings
+  "terminal.integrated.fontFamily": "monospace",
+  "terminal.integrated.fontSize": 14,
+  "workbench.editor.highlightModifiedTabs": true,
+  "workbench.startupEditor": "none",
+  "window.title": "${activeEditorMedium}${separator}${rootName}",
+
+  // Explorer settings
+  "explorer.confirmDelete": false,
+  "explorer.confirmDragAndDrop": false,
+  "explorer.sortOrder": "type",
+
+  // Diff editor settings
+  "diffEditor.ignoreTrimWhitespace": false,
+
+  // ESLint settings
+  "eslint.validate": [
+    "javascript",
+    "javascriptreact",
+    "typescript",
+    "typescriptreact",
+  ],
+  "eslint.codeAction.showDocumentation": {
+    "enable": true,
+  },
+  "eslint.format.enable": true,
+
+  // Prettier settings
+  "prettier.bracketSameLine": true,
+  "prettier.jsxSingleQuote": true,
+  "prettier.singleQuote": true,
+  "prettier.trailingComma": "all",
+
+  // HTML settings
+  "html.autoClosingTags": true,
+
+  // CSS settings
+  "css.lint.unknownAtRules": "ignore",
+
+  // Tailwind CSS settings
+  "tailwindCSS.experimental.classRegex": [
+    ["cva\\(([^)]*)\\)", "[\"'`]([^\"'`]*).*?[\"'`]"],
+  ],
+  "tailwindCSS.classAttributes": [
+    "class",
+    "className",
+    "ngClass",
+    "class:list",
+    "classNames",
+  ],
+  "tailwindCSS.includeLanguages": {
+    "typescript": "javascript",
+    "typescriptreact": "javascript",
+  },
+  "tailwindCSS.rootFontSize": 10,
+
+  // Token color customizations
+  "editor.tokenColorCustomizations": {
+    "textMateRules": [
+      {
+        "scope": [
+          "comment",
+          "entity.name.type.class",
+          "keyword",
+          "constant",
+          "storage.modifier",
+          "storage.type.class.js",
+        ],
+        "settings": {
+          "fontStyle": "italic",
+        },
+      },
+      {
+        "scope": [
+          "invalid",
+          "keyword.operator",
+          "constant.numeric.css",
+          "keyword.other.unit.px.css",
+          "constant.numeric.decimal.js",
+          "constant.numeric.json",
+        ],
+        "settings": {
+          "fontStyle": "",
+        },
+      },
+    ],
+  },
+  "playwright.reuseBrowser": true,
+  "playwright.showTrace": false,
+  "accessibility.signals.terminalBell": {
+    "sound": "on",
+  },
+  "terminal.integrated.enableVisualBell": true,
+  "terminal.integrated.enableMultiLinePasteWarning": "never",
+  "workbench.colorTheme": "Night Owl",
+  "claudeCode.preferredLocation": "sidebar",
+  "gitlens.ai.model": "vscode",
+  "gitlens.ai.vscode.model": "copilot:gpt-4.1",
+  "explorer.confirmPasteNative": false,
+  "security.workspace.trust.untrustedFiles": "open",
+}
