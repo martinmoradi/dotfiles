@@ -9,6 +9,12 @@ echo "Deploying from $DOTFILES ..."
 cp "$DOTFILES/hypr/custom.conf" "$HOME/.config/hypr/conf/custom.conf"
 echo "  -> hypr/conf/custom.conf"
 
+# Hyprland plugin auto-rebuild script (run via exec-once in custom.conf)
+mkdir -p "$HOME/.local/bin"
+cp "$DOTFILES/hypr/hyprpm-autoupdate.sh" "$HOME/.local/bin/hyprpm-autoupdate.sh"
+chmod +x "$HOME/.local/bin/hyprpm-autoupdate.sh"
+echo "  -> ~/.local/bin/hyprpm-autoupdate.sh"
+
 # Kitty custom config
 cp "$DOTFILES/kitty/custom.conf" "$HOME/.config/kitty/custom.conf"
 echo "  -> kitty/custom.conf"
