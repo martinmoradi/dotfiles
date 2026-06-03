@@ -12,3 +12,8 @@
 # Apps
 alias txt='gnome-text-editor'
 alias text='gnome-text-editor'
+
+# Claude Code with permission prompts skipped.
+# This calls the `claude` function (functions/claude.fish), so it still
+# holds the systemd sleep-inhibitor while running.
+alias claudex='claude --dangerously-skip-permissions'
