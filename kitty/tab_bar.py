@@ -23,7 +23,7 @@ DEFAULT_ICON = ""  #  folder (idle shell / unknown)
 # Checked top-to-bottom; first match wins. Matched against the basename of the
 # foreground process AND anywhere in its full command line.
 ICONS = (
-    (("claude",),                                              ""),  #  claude (star)
+    (("claude",),                                              ""),  #  claude (asterisk — closest glyph to the Claude mark)
     (("nvim", "vim"),                                          ""),  #  vim
     (("node", "npm", "pnpm", "yarn", "bun", "vite", "next",
       "tsc", "deno", "eslint"),                                ""),  #  node / JS
@@ -72,7 +72,7 @@ def _detect(tab):
 
 def draw_tab(draw_data, screen, tab, before, max_tab_length, index, is_last, extra_data):
     icon, label = _detect(tab)
-    tab = tab._replace(title=f" {index} {icon}  {label} ")
+    tab = tab._replace(title=f" {icon}  {label} ")
     return draw_tab_with_separator(
         draw_data, screen, tab, before, max_tab_length, index, is_last, extra_data
     )
