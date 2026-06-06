@@ -9,6 +9,11 @@
 # abbr -a gd git diff
 # abbr -a gl git log --oneline --graph
 
+# Git
+function gmain --description 'Switch to main and pull'
+    git checkout main; and git pull
+end
+
 # Apps
 alias txt='gnome-text-editor'
 alias text='gnome-text-editor'
