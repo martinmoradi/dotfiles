@@ -49,39 +49,208 @@ cp "$DOTFILES/sidepad/sidepad" "$HOME/.config/sidepad/sidepad"
 chmod +x "$HOME/.config/sidepad/sidepad"
 echo "  -> sidepad/sidepad"
 
-# Waybar: patch workspace module in modules.json for split-monitor-workspaces
+# Dev Stacks: owned Quickshell instance for the Waybar infra pulse
+QS_CONTAINERS="$HOME/.config/quickshell-containers"
+mkdir -p "$QS_CONTAINERS"
+if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete "$DOTFILES/containers/" "$QS_CONTAINERS/"
+else
+    cp -R "$DOTFILES/containers/." "$QS_CONTAINERS/"
+fi
+chmod +x "$QS_CONTAINERS/scripts/"*.sh
+echo "  -> quickshell-containers/"
+
+# Waybar: patch workspace module and Dev Stacks module in modules.json
 WAYBAR_MODULES="$HOME/.config/waybar/modules.json"
 if [ -f "$WAYBAR_MODULES" ]; then
-    python3 -c "
-import json, re
-
-# Read current modules.json (strip // comments for JSON parsing)
-with open('$WAYBAR_MODULES') as f:
-    text = f.read()
-clean = re.sub(r'//.*', '', text)
-# Handle trailing commas before } or ]
-clean = re.sub(r',\s*([}\]])', r'\1', clean)
-modules = json.loads(clean)
-
-# Read override
-with open('$DOTFILES/waybar/modules-workspace-override.jsonc') as f:
-    text = f.read()
-clean = re.sub(r'//.*', '', text)
-clean = re.sub(r',\s*([}\]])', r'\1', clean)
-override = json.loads(clean)
-
-# Merge workspace module
-modules['hyprland/workspaces'] = override['hyprland/workspaces']
-
-# Write back (can't preserve comments, but functional)
-# Back up original first
+    python3 - "$WAYBAR_MODULES" "$DOTFILES/waybar/modules-workspace-override.jsonc" "$DOTFILES/containers/waybar/module.jsonc" "$HOME/.config/waybar/themes" <<'PY'
+import json
 import shutil
-shutil.copy2('$WAYBAR_MODULES', '$WAYBAR_MODULES.bak')
+import sys
+from pathlib import Path
 
-with open('$WAYBAR_MODULES', 'w') as f:
-    json.dump(modules, f, indent=2)
-"
-    echo "  -> waybar/modules.json (workspace module patched, backup at modules.json.bak)"
+modules_path = Path(sys.argv[1])
+workspace_override_path = Path(sys.argv[2])
+containers_module_path = Path(sys.argv[3])
+themes_dir = Path(sys.argv[4])
+
+
+def strip_jsonc(text):
+    out = []
+    i = 0
+    in_string = False
+    escaped = False
+    while i < len(text):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            i += 2
+            while i < len(text) and text[i] not in "\r\n":
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i + 1 < len(text) and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+
+        out.append(ch)
+        i += 1
+
+    clean = "".join(out)
+    import re
+    return re.sub(r",\s*([}\]])", r"\1", clean)
+
+
+def load_jsonc(path):
+    return json.loads(strip_jsonc(path.read_text()))
+
+
+def backup_once(path):
+    backup = Path(str(path) + ".bak")
+    if not backup.exists():
+        shutil.copy2(path, backup)
+
+
+def write_json(path, data):
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def array_bounds(text, key):
+    key_pos = text.find(f'"{key}"')
+    if key_pos < 0:
+        return None
+    start = text.find("[", key_pos)
+    if start < 0:
+        return None
+
+    in_string = False
+    escaped = False
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return start, i
+    return None
+
+
+def insert_theme_module(text):
+    bounds = array_bounds(text, "modules-right")
+    if not bounds:
+        return text
+
+    start, end = bounds
+    before = text[: start + 1]
+    array_body = text[start + 1 : end]
+    after = text[end:]
+    lines = array_body.splitlines(keepends=True)
+
+    item_indent = "        "
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith('"'):
+            item_indent = line[: len(line) - len(stripped)]
+            break
+
+    def is_containers(line):
+        return line.strip().rstrip(",").strip().strip('"') == "custom/containers"
+
+    # Drop any existing entry first so re-running re-homes it canonically
+    # (idempotent: a no-op once it's already in the right spot).
+    lines = [line for line in lines if not is_containers(line)]
+
+    entry = f'{item_indent}"custom/containers",\n'
+
+    # Preferred home: immediately to the right of the updates module
+    # (left edge of the right-hand island).
+    for index, line in enumerate(lines):
+        if '"custom/updates"' in line:
+            lines.insert(index + 1, entry)
+            return before + "".join(lines) + after
+
+    # Fallbacks for themes without an updates module.
+    for index, line in enumerate(lines):
+        if '"custom/notification"' in line:
+            lines.insert(index, entry)
+            return before + "".join(lines) + after
+
+    for index, line in enumerate(lines):
+        if '"tray"' in line:
+            lines.insert(index + 1, entry)
+            return before + "".join(lines) + after
+
+    lines.append(entry)
+    return before + "".join(lines) + after
+
+
+modules = load_jsonc(modules_path)
+workspace_override = load_jsonc(workspace_override_path)
+containers_module = load_jsonc(containers_module_path)
+
+backup_once(modules_path)
+modules["hyprland/workspaces"] = workspace_override["hyprland/workspaces"]
+modules.update(containers_module)
+write_json(modules_path, modules)
+
+touched_themes = []
+for config_path in sorted(themes_dir.glob("*/config")):
+    data = load_jsonc(config_path)
+    includes = data.get("include", [])
+    if isinstance(includes, str):
+        includes = [includes]
+    if "~/.config/waybar/modules.json" not in includes:
+        continue
+
+    modules_right = data.get("modules-right")
+    if not isinstance(modules_right, list):
+        continue
+
+    original = config_path.read_text()
+    updated = insert_theme_module(original)
+    if updated == original:
+        continue
+
+    backup_once(config_path)
+    config_path.write_text(updated)
+    touched_themes.append(config_path.name if config_path.parent == themes_dir else config_path.parent.name)
+
+print("themes=" + ",".join(touched_themes))
+PY
+    echo "  -> waybar/modules.json (workspace + dev stacks patched, one-time backup at modules.json.bak)"
+    echo "  -> waybar/themes/*/config (dev stacks inserted where modules.json is included)"
 fi
 
 echo ""

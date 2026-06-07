@@ -1,0 +1,14 @@
+{
+  "custom/containers": {
+    "exec": "~/.config/quickshell-containers/scripts/status.sh",
+    "return-type": "json",
+    "interval": 5,
+    "signal": 8,
+    "format": "{}",
+    "escape": false,
+    "on-click": "qs -p ~/.config/quickshell-containers ipc call containers toggle",
+    "on-click-middle": "~/.config/quickshell-containers/scripts/control.sh toggle \"$(cat ~/.cache/dev-stacks/last-project 2>/dev/null)\"",
+    "on-click-right": "podman-desktop",
+    "tooltip": true
+  }
+}
