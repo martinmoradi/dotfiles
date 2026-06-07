@@ -48,7 +48,8 @@ if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
     exit 1
 fi
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_path="$(readlink -f "${BASH_SOURCE[0]}")"
+script_dir="$(cd "$(dirname "$script_path")" && pwd)"
 repo_dir="$(cd "$script_dir/.." && pwd)"
 cd "$repo_dir"
 
