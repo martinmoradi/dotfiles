@@ -4,7 +4,6 @@ geocode-glib-common
 google-chrome
 jack
 openai-codex-bin
-openai-codex-desktop
 python-pywalfox
 visual-studio-code-bin
 waypaper-git

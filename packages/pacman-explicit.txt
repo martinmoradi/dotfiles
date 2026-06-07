@@ -163,7 +163,6 @@ nwg-look
 obsidian
 octopi
 openai-codex-bin
-openai-codex-desktop
 opencl-nvidia
 openssh
 os-prober
