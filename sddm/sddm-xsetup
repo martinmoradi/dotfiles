@@ -1,0 +1,43 @@
+#!/bin/sh
+
+# SDDM is currently using an Xorg greeter on this machine. Hyprland's
+# monitor= lines do not apply here, so mirror the same physical layout with
+# xrandr before the login UI is shown.
+
+if ! command -v xrandr >/dev/null 2>&1; then
+    exit 0
+fi
+
+is_connected() {
+    xrandr --query | grep -q "^$1 connected"
+}
+
+pick_output() {
+    for output in "$@"; do
+        if is_connected "$output"; then
+            printf '%s\n' "$output"
+            return 0
+        fi
+    done
+    return 1
+}
+
+primary_output="$(pick_output DP-1 DP-0 DisplayPort-1 DisplayPort-0)"
+portrait_output="$(pick_output HDMI-A-1 HDMI-1 HDMI-0)"
+
+if [ -n "$primary_output" ]; then
+    xrandr --output "$primary_output" \
+        --mode 2560x1440 \
+        --rate 279.95 \
+        --pos 0x455 \
+        --rotate normal \
+        --primary
+fi
+
+if [ -n "$portrait_output" ]; then
+    xrandr --output "$portrait_output" \
+        --mode 2560x1440 \
+        --rate 58.95 \
+        --pos 2560x0 \
+        --rotate left
+fi
