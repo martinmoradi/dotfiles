@@ -250,6 +250,7 @@ wireplumber
 wl-clipboard
 wofi
 wpa_supplicant
+wtype
 xclip
 xdg-desktop-portal-gtk
 xdg-desktop-portal-hyprland
