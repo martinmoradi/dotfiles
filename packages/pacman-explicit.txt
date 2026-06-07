@@ -70,6 +70,7 @@ figlet
 firefox
 flatpak
 fsarchiver
+gimp
 git
 github-cli
 glances
