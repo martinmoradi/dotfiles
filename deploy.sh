@@ -15,6 +15,20 @@ cp "$DOTFILES/hypr/hyprpm-autoupdate.sh" "$HOME/.local/bin/hyprpm-autoupdate.sh"
 chmod +x "$HOME/.local/bin/hyprpm-autoupdate.sh"
 echo "  -> ~/.local/bin/hyprpm-autoupdate.sh"
 
+# Dotfiles sync helper + pacman hook.
+chmod +x "$DOTFILES/scripts/dotfiles-sync.sh" \
+    "$DOTFILES/scripts/dotfiles-pacman-hook.sh" \
+    "$DOTFILES/scripts/install-pacman-sync-hook.sh"
+ln -sf "$DOTFILES/scripts/dotfiles-sync.sh" "$HOME/.local/bin/dotfiles-sync"
+echo "  -> ~/.local/bin/dotfiles-sync"
+if [ -f "$DOTFILES/pacman/99-dotfiles-sync.hook.in" ]; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+        "$DOTFILES/scripts/install-pacman-sync-hook.sh"
+    else
+        echo "  !! pacman hook not installed; run: $DOTFILES/scripts/install-pacman-sync-hook.sh"
+    fi
+fi
+
 # Clipboard-image paster (bound to Super+Shift+V in custom.conf). Needs wtype.
 cp "$DOTFILES/hypr/clip-image-paste.sh" "$HOME/.local/bin/clip-image-paste.sh"
 chmod +x "$HOME/.local/bin/clip-image-paste.sh"

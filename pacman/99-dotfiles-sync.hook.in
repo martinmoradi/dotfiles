@@ -1,0 +1,14 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Sync dotfiles package snapshot
+When = PostTransaction
+Depends = bash
+Depends = systemd
+Depends = util-linux
+Exec = @DOTFILES@/scripts/dotfiles-pacman-hook.sh
