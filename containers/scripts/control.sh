@@ -12,14 +12,16 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(sys.argv[1])
 ARGS = sys.argv[2:]
-SIGNAL = "RTMIN+8"
+SIGNALS = ("RTMIN+8", "RTMIN+9")
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dev-stacks"
 LAST_PROJECT_FILE = CACHE_DIR / "last-project"
 LOG_FILE = CACHE_DIR / "actions.log"
+PROJECTS_FILE = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "dev" / "projects.json"
 
 
 def refresh_waybar():
-    subprocess.run(["pkill", f"-{SIGNAL}", "waybar"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for signal in SIGNALS:
+        subprocess.run(["pkill", f"-{signal}", "waybar"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def notify(message):
@@ -34,6 +36,34 @@ def load_state():
     return json.loads(proc.stdout)
 
 
+def load_project_registry():
+    try:
+        projects = json.loads(PROJECTS_FILE.read_text())
+    except Exception:
+        return []
+
+    registry = []
+    for item in projects if isinstance(projects, list) else []:
+        if not isinstance(item, dict) or not item.get("id") or not item.get("path"):
+            continue
+        registry.append(
+            {
+                "name": str(item["id"]),
+                "label": str(item.get("label") or item["id"]),
+                "working_dir": str(Path(str(item["path"])).expanduser()),
+                "state": "stopped",
+                "state_label": "Stopped",
+                "summary": "No stack",
+                "action": "play",
+                "attention": False,
+                "protected_count": 0,
+                "service_count": 0,
+                "services": [],
+            }
+        )
+    return registry
+
+
 def find_project(state, name):
     projects = state.get("projects", [])
     if not name:
@@ -43,6 +73,12 @@ def find_project(state, name):
     for project in projects:
         if project["name"] == name:
             return project
+
+    wanted = str(name or "").casefold()
+    for project in load_project_registry():
+        if wanted in {project["name"].casefold(), project["label"].casefold(), project["working_dir"].casefold()}:
+            return project
+
     raise SystemExit(f"Unknown dev stack: {name or '(none)'}")
 
 
@@ -83,6 +119,7 @@ cd "$workdir" || exit 1
 "$@"
 rc=$?
 pkill -RTMIN+8 waybar >/dev/null 2>&1 || true
+pkill -RTMIN+9 waybar >/dev/null 2>&1 || true
 exit "$rc"
 '''
     log = open(LOG_FILE, "ab")

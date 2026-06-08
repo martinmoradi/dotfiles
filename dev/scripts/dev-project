@@ -1,0 +1,831 @@
+#!/usr/bin/env python3
+import argparse
+import html
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from collections import Counter
+from pathlib import Path
+
+CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+DEV_CONFIG_DIR = CONFIG_HOME / "dev"
+PROJECTS_FILE = DEV_CONFIG_DIR / "projects.json"
+CURRENT_PROJECT_FILE = DEV_CONFIG_DIR / "current-project"
+HIDDEN_PROJECTS_FILE = DEV_CONFIG_DIR / "hidden-projects.json"
+PICKER_DIR = CONFIG_HOME / "quickshell-projects"
+CONTAINERS_DIR = CONFIG_HOME / "quickshell-containers"
+CONTAINERS_STATE = CONTAINERS_DIR / "scripts" / "state.sh"
+CONTAINERS_CONTROL = CONTAINERS_DIR / "scripts" / "control.sh"
+WAYBAR_SIGNALS = ("RTMIN+9", "RTMIN+8")
+DEV_DRAWER_CLASS = "dotfiles-devpad"
+DEV_DRAWER_WORKSPACE = "devpad"
+
+ALERT_STATES = {"crashed", "unhealthy", "unknown"}
+ACTIVE_STATES = {"healthy", "running"}
+BUSY_STATES = {"starting"}
+STOPPED_STATES = {"stopped", "created", "configured"}
+SCAN_ROOTS = (
+    (Path.home() / "src" / "pro", "client"),
+    (Path.home() / "src" / "perso", "personal"),
+)
+
+
+def expand_path(value):
+    return str(Path(value).expanduser())
+
+
+def local_repo_path(*parts):
+    try:
+        root = Path(__file__).resolve().parents[2]
+    except IndexError:
+        return None
+    candidate = root.joinpath(*parts)
+    return candidate if candidate.exists() else None
+
+
+def containers_state_script():
+    if CONTAINERS_STATE.exists():
+        return CONTAINERS_STATE
+    return local_repo_path("containers", "scripts", "state.sh") or CONTAINERS_STATE
+
+
+def containers_control_script():
+    if CONTAINERS_CONTROL.exists():
+        return CONTAINERS_CONTROL
+    return local_repo_path("containers", "scripts", "control.sh") or CONTAINERS_CONTROL
+
+
+def load_projects():
+    try:
+        raw = json.loads(PROJECTS_FILE.read_text())
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid project registry: {PROJECTS_FILE}: {exc}") from exc
+
+    if not isinstance(raw, list):
+        raise SystemExit(f"Project registry must be a JSON list: {PROJECTS_FILE}")
+
+    projects = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        if not item.get("id") or not item.get("path"):
+            continue
+        projects.append(
+            {
+                "id": str(item["id"]),
+                "label": str(item.get("label") or item["id"]),
+                "path": expand_path(str(item["path"])),
+                "kind": str(item.get("kind") or "project"),
+            }
+        )
+    return projects
+
+
+def project_label(project_id):
+    return " ".join(part.capitalize() for part in project_id.replace("_", "-").split("-") if part) or project_id
+
+
+def normalize_project_id(name):
+    cleaned = []
+    previous_dash = False
+    for char in name.strip().casefold():
+        if char.isalnum():
+            cleaned.append(char)
+            previous_dash = False
+        elif not previous_dash:
+            cleaned.append("-")
+            previous_dash = True
+    return "".join(cleaned).strip("-")
+
+
+def scan_projects(projects, quiet=False):
+    by_id = {project["id"]: dict(project) for project in projects}
+    order = [project["id"] for project in projects]
+    current = current_path(projects)
+    current_changed = False
+    changed = False
+    added = []
+    updated = []
+
+    for root, kind in SCAN_ROOTS:
+        if not root.is_dir():
+            continue
+
+        for child in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+
+            project_id = normalize_project_id(child.name)
+            if not project_id:
+                continue
+
+            path = str(child)
+            if project_id in by_id:
+                project = by_id[project_id]
+                old_path = project.get("path", "")
+                if old_path != path or project.get("kind") != kind:
+                    project["path"] = path
+                    project["kind"] = kind
+                    changed = True
+                    updated.append(project_id)
+                    if old_path == current:
+                        DEV_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+                        CURRENT_PROJECT_FILE.write_text(path + "\n")
+                continue
+
+            by_id[project_id] = {
+                "id": project_id,
+                "label": project_label(project_id),
+                "path": path,
+                "kind": kind,
+            }
+            order.append(project_id)
+            changed = True
+            added.append(project_id)
+
+    if current and not any(project.get("path") == current for project in by_id.values()):
+        current_candidate = Path(current)
+        for project_id in order:
+            project_path = Path(by_id[project_id].get("path", ""))
+            try:
+                current_candidate.relative_to(project_path)
+            except ValueError:
+                continue
+
+            DEV_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            CURRENT_PROJECT_FILE.write_text(str(project_path) + "\n")
+            current_changed = True
+            break
+
+    if changed:
+        DEV_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        PROJECTS_FILE.write_text(json.dumps([by_id[project_id] for project_id in order], indent=2) + "\n")
+
+    if changed or current_changed:
+        refresh_waybar()
+
+    if not quiet:
+        print(json.dumps({"added": added, "updated": updated, "current_updated": current_changed}, separators=(",", ":")))
+
+
+def fallback_label(path):
+    parts = [part for part in Path(path).parts if part not in {"/", ""}]
+    if len(parts) >= 2:
+        return "/".join(parts[-2:])
+    if parts:
+        return parts[-1]
+    return str(path)
+
+
+def project_for_path(projects, path):
+    path = expand_path(path)
+    for project in projects:
+        if project["path"] == path:
+            return project
+    return None
+
+
+def current_path(projects):
+    try:
+        current = CURRENT_PROJECT_FILE.read_text().strip()
+    except FileNotFoundError:
+        current = ""
+
+    if current:
+        return expand_path(current)
+    if projects:
+        return projects[0]["path"]
+    return str(Path.home())
+
+
+def current_state(projects):
+    path = current_path(projects)
+    project = project_for_path(projects, path)
+    return {
+        "id": project["id"] if project else "",
+        "label": project["label"] if project else fallback_label(path),
+        "path": path,
+        "kind": project["kind"] if project else "project",
+    }
+
+
+def load_hidden_projects():
+    try:
+        raw = json.loads(HIDDEN_PROJECTS_FILE.read_text())
+    except FileNotFoundError:
+        return set()
+    except json.JSONDecodeError:
+        return set()
+
+    if isinstance(raw, list):
+        return {str(item) for item in raw}
+    if isinstance(raw, dict):
+        projects = raw.get("projects")
+        if isinstance(projects, list):
+            return {str(item) for item in projects}
+    return set()
+
+
+def save_hidden_projects(hidden):
+    DEV_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    HIDDEN_PROJECTS_FILE.write_text(json.dumps(sorted(hidden), indent=2) + "\n")
+
+
+def refresh_waybar():
+    for signal in WAYBAR_SIGNALS:
+        subprocess.run(
+            ["pkill", f"-{signal}", "waybar"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def run_detached(argv, cwd=None):
+    subprocess.Popen(
+        argv,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def require_command(name):
+    path = shutil.which(name)
+    if not path:
+        raise SystemExit(f"Missing command: {name}")
+    return path
+
+
+def require_project_dir(path):
+    target = Path(path)
+    if not target.is_dir():
+        raise SystemExit(f"Project path does not exist: {target}")
+    return str(target)
+
+
+def resolve_project(projects, token):
+    wanted = token.casefold()
+    for project in projects:
+        if project["id"].casefold() == wanted:
+            return project
+    for project in projects:
+        if project["label"].casefold() == wanted:
+            return project
+    expanded = expand_path(token)
+    for project in projects:
+        if project["path"] == expanded:
+            return project
+    raise SystemExit(f"Unknown project: {token}")
+
+
+def set_project(projects, token):
+    project = resolve_project(projects, token)
+    DEV_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CURRENT_PROJECT_FILE.write_text(project["path"] + "\n")
+    refresh_waybar()
+    print(f'{project["label"]}\t{project["path"]}')
+
+
+def set_project_hidden(projects, token, hidden):
+    project = resolve_project(projects, token)
+    hidden_projects = load_hidden_projects()
+    if hidden:
+        hidden_projects.add(project["id"])
+        action = "hidden"
+    else:
+        hidden_projects.discard(project["id"])
+        action = "visible"
+    save_hidden_projects(hidden_projects)
+    print(f'{project["label"]}\t{action}')
+
+
+def toggle_project_hidden(projects, token):
+    project = resolve_project(projects, token)
+    hidden_projects = load_hidden_projects()
+    set_project_hidden(projects, token, project["id"] not in hidden_projects)
+
+
+def print_list(projects):
+    for project in projects:
+        marker = "*" if project["path"] == current_path(projects) else " "
+        print(f'{marker} {project["id"]}\t{project["label"]}\t{project["path"]}')
+
+
+def print_state(projects):
+    current = current_state(projects)
+    output_projects = []
+    for project in projects:
+        item = dict(project)
+        item["current"] = project["path"] == current["path"]
+        output_projects.append(item)
+    print(json.dumps({"current": current, "projects": output_projects}, separators=(",", ":")))
+
+
+def read_container_state():
+    script = containers_state_script()
+    try:
+        proc = subprocess.run(
+            [str(script)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return {"generated_at": "", "error": f"Missing infra state script: {script}", "projects": []}
+
+    if proc.returncode != 0:
+        return {
+            "generated_at": "",
+            "error": proc.stderr.strip() or proc.stdout.strip() or "Could not read infra state",
+            "projects": [],
+        }
+
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return {"generated_at": "", "error": f"Invalid infra state JSON: {exc}", "projects": []}
+
+    if not isinstance(data, dict):
+        return {"generated_at": "", "error": "Infra state must be a JSON object", "projects": []}
+    if not isinstance(data.get("projects"), list):
+        data["projects"] = []
+    return data
+
+
+def state_label(state):
+    return {
+        "healthy": "Healthy",
+        "running": "Running",
+        "starting": "Starting",
+        "partial": "Partial",
+        "trouble": "Trouble",
+        "unhealthy": "Unhealthy",
+        "crashed": "Crashed",
+        "stopped": "Stopped",
+        "paused": "Paused",
+        "unknown": "Unknown",
+    }.get(str(state), str(state).replace("-", " ").title())
+
+
+def service_sort_key(service):
+    return (bool(service.get("protected")), str(service.get("name") or "").casefold())
+
+
+def service_summary(services, protected_count):
+    counts = Counter(str(service.get("state") or "unknown") for service in services)
+    order = ["healthy", "running", "starting", "unhealthy", "crashed", "stopped", "paused", "unknown"]
+    parts = []
+    for state in order:
+        count = counts.get(state, 0)
+        if count:
+            parts.append(f"{count} {state_label(state).lower()}")
+    if protected_count:
+        parts.append(f"{protected_count} protected")
+    return ", ".join(parts) if parts else ("No normal services" if protected_count else "No stack")
+
+
+def aggregate_infra(infra, project):
+    if not infra:
+        return {
+            "name": project.get("id") or "",
+            "working_dir": project.get("path") or "",
+            "state": "stopped",
+            "state_label": "Stopped",
+            "summary": "No stack",
+            "action": "play",
+            "attention": False,
+            "protected_count": 0,
+            "service_count": 0,
+            "normal_service_count": 0,
+            "services": [],
+        }
+
+    services = list(infra.get("services") or [])
+    services.sort(key=service_sort_key)
+    normal = [service for service in services if not service.get("protected")]
+    protected_count = len(services) - len(normal)
+
+    if not services:
+        state = "stopped"
+    elif not normal:
+        state = "stopped"
+    else:
+        states = {str(service.get("state") or "unknown") for service in normal}
+        if states & ALERT_STATES:
+            state = "trouble"
+        elif states & BUSY_STATES:
+            state = "starting"
+        elif all(item in ACTIVE_STATES for item in states):
+            state = "healthy"
+        elif all(item in STOPPED_STATES for item in states):
+            state = "stopped"
+        else:
+            state = "partial"
+
+    attention = any(
+        (not service.get("protected")) and str(service.get("state") or "unknown") in ALERT_STATES
+        for service in services
+    )
+    action = "pause" if state in {"healthy", "running", "starting", "partial"} else "play"
+    summary = service_summary(normal, protected_count)
+
+    return {
+        "name": str(infra.get("name") or project.get("id") or ""),
+        "working_dir": str(infra.get("working_dir") or project.get("path") or ""),
+        "state": state,
+        "state_label": state_label(state),
+        "summary": summary,
+        "action": action,
+        "attention": attention,
+        "protected_count": protected_count,
+        "service_count": len(services),
+        "normal_service_count": len(normal),
+        "services": services,
+    }
+
+
+def match_infra_project(project, infra_projects):
+    project_id = str(project.get("id") or "").casefold()
+    label = str(project.get("label") or "").casefold()
+    path = expand_path(str(project.get("path") or ""))
+
+    for infra in infra_projects:
+        name = str(infra.get("name") or "").casefold()
+        if name and name in {project_id, label}:
+            return infra
+
+    for infra in infra_projects:
+        working_dir = str(infra.get("working_dir") or "")
+        if working_dir and expand_path(working_dir) == path:
+            return infra
+
+    return None
+
+
+def build_hub_state(projects):
+    current = current_state(projects)
+    hidden_projects = load_hidden_projects()
+    container_state = read_container_state()
+    infra_projects = container_state.get("projects") or []
+
+    output_projects = []
+    current_project = None
+    for project in projects:
+        item = dict(project)
+        item["current"] = project["path"] == current["path"]
+        item["hidden"] = project["id"] in hidden_projects
+        item["infra"] = aggregate_infra(match_infra_project(project, infra_projects), item)
+        output_projects.append(item)
+        if item["current"]:
+            current_project = item
+
+    if current_project is None:
+        current_project = dict(current)
+        current_project["current"] = True
+        current_project["hidden"] = current_project.get("id") in hidden_projects
+        current_project["infra"] = aggregate_infra(match_infra_project(current_project, infra_projects), current_project)
+
+    return {
+        "generated_at": container_state.get("generated_at") or "",
+        "error": container_state.get("error") or "",
+        "current": current_project,
+        "hidden_count": sum(1 for project in output_projects if project.get("hidden")),
+        "projects": output_projects,
+    }
+
+
+def print_hub_state(projects):
+    print(json.dumps(build_hub_state(projects), separators=(",", ":")))
+
+
+def infra_tooltip(project):
+    infra = project.get("infra") or {}
+    lines = [
+        project.get("label") or project.get("id") or "Project",
+        project.get("path") or "",
+        f'{infra.get("state_label", "Stopped")}: {infra.get("summary", "No stack")}',
+    ]
+    for service in infra.get("services") or []:
+        suffix = ""
+        if service.get("protected"):
+            suffix = f' [{service.get("protect_reason") or "protected"}]'
+        exit_code = service.get("exit_code")
+        exit_suffix = f" (exit {exit_code})" if exit_code not in {None, "", 0, "0"} else ""
+        lines.append(f'  {service.get("name", "service")}: {service.get("state_label", "Unknown").lower()}{exit_suffix}{suffix}')
+    return "\n".join(line for line in lines if line is not None)
+
+
+def waybar(projects):
+    waybar_label(projects)
+
+
+def waybar_label(projects):
+    state = build_hub_state(projects)
+    current = state["current"]
+    text = html.escape(current.get("label") or "Project", quote=True)
+    tooltip = html.escape(infra_tooltip(current), quote=True)
+    print(
+        json.dumps(
+            {
+                "text": text,
+                "tooltip": tooltip,
+                "class": "project-label",
+                "alt": current.get("id") or "path",
+            },
+            separators=(",", ":"),
+        )
+    )
+
+
+def waybar_action(projects):
+    state = build_hub_state(projects)
+    current = state["current"]
+    infra = current.get("infra") or {}
+    css_class = "stopped"
+    symbol = "▶"
+
+    if state.get("error"):
+        css_class = "alert"
+        symbol = "●"
+        tooltip = f'{current.get("label") or "Project"}\n{state["error"]}'
+    elif infra.get("attention"):
+        css_class = "alert"
+        symbol = "●"
+        tooltip = infra_tooltip(current)
+    elif infra.get("state") in {"healthy", "running"}:
+        css_class = "running"
+        symbol = "⏸"
+        tooltip = infra_tooltip(current)
+    elif infra.get("state") in {"starting", "partial"}:
+        css_class = "working"
+        symbol = "◐"
+        tooltip = infra_tooltip(current)
+    else:
+        tooltip = infra_tooltip(current)
+
+    print(
+        json.dumps(
+            {
+                "text": symbol,
+                "tooltip": html.escape(tooltip, quote=True),
+                "class": css_class,
+                "alt": css_class,
+            },
+            separators=(",", ":"),
+        )
+    )
+
+
+def open_terminal(projects):
+    path = require_project_dir(current_path(projects))
+    run_detached([require_command("kitty"), "--directory", path])
+
+
+def open_code(projects):
+    path = require_project_dir(current_path(projects))
+    run_detached([require_command("code"), path])
+
+
+def open_podman_desktop():
+    run_detached([require_command("podman-desktop")])
+
+
+def picker():
+    hub()
+
+
+def hub():
+    qs = require_command("qs")
+    path = str(PICKER_DIR)
+    call = [qs, "-p", path, "ipc", "call", "projects", "toggle"]
+    proc = subprocess.run(call, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if proc.returncode == 0:
+        return
+
+    run_detached([qs, "-d", "-p", path])
+    time.sleep(0.25)
+    subprocess.run(call, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def infra_toggle(projects):
+    state = build_hub_state(projects)
+    current = state["current"]
+    infra = current.get("infra") or {}
+    if state.get("error") or infra.get("attention"):
+        hub()
+        return
+
+    target = infra.get("name") or current.get("id")
+    if not target:
+        hub()
+        return
+
+    control = containers_control_script()
+    action = "stop" if infra.get("action") == "pause" else "up"
+    try:
+        subprocess.Popen(
+            [str(control), action, str(target)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        hub()
+        return
+    refresh_waybar()
+
+
+def hypr_json(name):
+    proc = subprocess.run(
+        [require_command("hyprctl"), name, "-j"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if proc.returncode != 0:
+        return []
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return []
+
+
+def devpad_clients():
+    clients = hypr_json("clients")
+    return [client for client in clients if client.get("class") == DEV_DRAWER_CLASS]
+
+
+def devpad_visible():
+    for monitor in hypr_json("monitors"):
+        workspace = monitor.get("specialWorkspace") or {}
+        if isinstance(workspace, dict) and workspace.get("name") == f"special:{DEV_DRAWER_WORKSPACE}":
+            return True
+    return False
+
+
+def hypr_dispatch(*args):
+    subprocess.run(
+        [require_command("hyprctl"), "dispatch", *args],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def wait_for_devpad():
+    for _ in range(40):
+        clients = devpad_clients()
+        if clients:
+            return clients[0]
+        time.sleep(0.1)
+    return None
+
+
+def spawn_devpad(path):
+    path = require_project_dir(path)
+    run_detached(
+        [
+            require_command("kitty"),
+            "--class",
+            DEV_DRAWER_CLASS,
+            "--title",
+            "Dev Drawer",
+            "--directory",
+            path,
+        ]
+    )
+    client = wait_for_devpad()
+    if client and client.get("address"):
+        hypr_dispatch(
+            "movetoworkspacesilent",
+            f"special:{DEV_DRAWER_WORKSPACE},address:{client['address']}",
+        )
+    return client
+
+
+def show_devpad():
+    if not devpad_visible():
+        hypr_dispatch("togglespecialworkspace", DEV_DRAWER_WORKSPACE)
+
+
+def drawer(projects):
+    if not devpad_clients():
+        spawn_devpad(current_path(projects))
+        show_devpad()
+        return
+    hypr_dispatch("togglespecialworkspace", DEV_DRAWER_WORKSPACE)
+
+
+def drawer_reset(projects):
+    for client in devpad_clients():
+        pid = client.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            try:
+                os.kill(pid, 15)
+            except ProcessLookupError:
+                pass
+    time.sleep(0.2)
+    spawn_devpad(current_path(projects))
+    show_devpad()
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="dev-project")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    set_parser = subparsers.add_parser("set")
+    set_parser.add_argument("project")
+
+    hide_parser = subparsers.add_parser("hide")
+    hide_parser.add_argument("project")
+
+    show_parser = subparsers.add_parser("show")
+    show_parser.add_argument("project")
+
+    toggle_hidden_parser = subparsers.add_parser("toggle-hidden")
+    toggle_hidden_parser.add_argument("project")
+
+    scan_parser = subparsers.add_parser("scan")
+    scan_parser.add_argument("--quiet", action="store_true")
+
+    subparsers.add_parser("current")
+    subparsers.add_parser("list")
+    subparsers.add_parser("label")
+    subparsers.add_parser("state")
+    subparsers.add_parser("hub-state")
+    subparsers.add_parser("waybar")
+    subparsers.add_parser("waybar-label")
+    subparsers.add_parser("waybar-action")
+    subparsers.add_parser("terminal")
+    subparsers.add_parser("code")
+    subparsers.add_parser("podman-desktop")
+    subparsers.add_parser("picker")
+    subparsers.add_parser("hub")
+    subparsers.add_parser("infra-toggle")
+    subparsers.add_parser("drawer")
+    subparsers.add_parser("drawer-reset")
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
+    projects = load_projects()
+
+    if args.command == "set":
+        set_project(projects, args.project)
+    elif args.command == "hide":
+        set_project_hidden(projects, args.project, True)
+    elif args.command == "show":
+        set_project_hidden(projects, args.project, False)
+    elif args.command == "toggle-hidden":
+        toggle_project_hidden(projects, args.project)
+    elif args.command == "scan":
+        scan_projects(projects, quiet=args.quiet)
+    elif args.command == "current":
+        print(current_path(projects))
+    elif args.command == "list":
+        print_list(projects)
+    elif args.command == "label":
+        print(current_state(projects)["label"])
+    elif args.command == "state":
+        print_state(projects)
+    elif args.command == "hub-state":
+        print_hub_state(projects)
+    elif args.command == "waybar":
+        waybar(projects)
+    elif args.command == "waybar-label":
+        waybar_label(projects)
+    elif args.command == "waybar-action":
+        waybar_action(projects)
+    elif args.command == "terminal":
+        open_terminal(projects)
+    elif args.command == "code":
+        open_code(projects)
+    elif args.command == "podman-desktop":
+        open_podman_desktop()
+    elif args.command == "picker":
+        picker()
+    elif args.command == "hub":
+        hub()
+    elif args.command == "infra-toggle":
+        infra_toggle(projects)
+    elif args.command == "drawer":
+        drawer(projects)
+    elif args.command == "drawer-reset":
+        drawer_reset(projects)
+    else:
+        raise SystemExit(f"Unknown command: {args.command}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        sys.exit(0)

@@ -14,6 +14,11 @@ function gmain --description 'Switch to main and pull'
     git checkout main; and git pull
 end
 
+# Projects
+function jukkai --description 'Go to the Jukkai app project'
+    cd ~/src/pro/jukkai/app
+end
+
 # Apps
 alias txt='gnome-text-editor'
 alias text='gnome-text-editor'

@@ -17,6 +17,7 @@ except Exception:
 
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "dev-stacks"
 LAST_PROJECT_FILE = CACHE_DIR / "last-project"
+PROJECTS_FILE = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "dev" / "projects.json"
 
 
 def run_podman_ps():
@@ -54,18 +55,44 @@ def run_podman_ps():
 def compose_files(labels, working_dir):
     raw = labels.get("com.docker.compose.project.config_files", "")
     files = [Path(part) for part in raw.split(",") if part.strip()]
-    if files:
-        return files
 
     if working_dir:
         base = Path(working_dir)
-        return [
-            base / "compose.yaml",
-            base / "compose.yml",
-            base / "docker-compose.yaml",
-            base / "docker-compose.yml",
-        ]
-    return []
+        files.extend(
+            [
+                base / "compose.yaml",
+                base / "compose.yml",
+                base / "docker-compose.yaml",
+                base / "docker-compose.yml",
+            ]
+        )
+
+    seen = set()
+    unique_files = []
+    for path in files:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_files.append(path)
+    return unique_files
+
+
+def load_project_registry():
+    try:
+        projects = json.loads(PROJECTS_FILE.read_text())
+    except Exception:
+        return {}
+
+    registry = {}
+    for project in projects if isinstance(projects, list) else []:
+        if not isinstance(project, dict):
+            continue
+        project_id = project.get("id")
+        path = project.get("path")
+        if project_id and path:
+            registry[str(project_id)] = str(Path(str(path)).expanduser())
+    return registry
 
 
 def load_compose_metadata(labels, working_dir):
@@ -195,6 +222,7 @@ def action_for_state(state):
 
 
 containers, error = run_podman_ps()
+registry_paths = load_project_registry()
 projects = defaultdict(lambda: {"containers": [], "labels": {}, "working_dir": ""})
 
 for container in containers:
@@ -217,7 +245,7 @@ except Exception:
 
 result_projects = []
 for name, bucket in projects.items():
-    working_dir = bucket["working_dir"]
+    working_dir = registry_paths.get(name) or bucket["working_dir"]
     metadata = load_compose_metadata(bucket["labels"], working_dir)
     services = []
 

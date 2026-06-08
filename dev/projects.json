@@ -1,0 +1,20 @@
+[
+  {
+    "id": "jukkai",
+    "label": "Jukkai",
+    "path": "/home/martin/src/pro/jukkai",
+    "kind": "client"
+  },
+  {
+    "id": "portfolio",
+    "label": "Portfolio",
+    "path": "/home/martin/src/perso/portfolio",
+    "kind": "personal"
+  },
+  {
+    "id": "dotfiles",
+    "label": "Dotfiles",
+    "path": "/home/martin/src/perso/dotfiles",
+    "kind": "personal"
+  }
+]

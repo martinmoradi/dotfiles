@@ -1,0 +1,24 @@
+{
+  "custom/project-label": {
+    "exec": "~/.local/bin/dev-project waybar-label",
+    "return-type": "json",
+    "interval": 10,
+    "signal": 9,
+    "format": "{}",
+    "on-click": "~/.local/bin/dev-project hub",
+    "on-click-middle": "~/.local/bin/dev-project terminal",
+    "on-click-right": "~/.local/bin/dev-project code",
+    "tooltip": true
+  },
+  "custom/project-action": {
+    "exec": "~/.local/bin/dev-project waybar-action",
+    "return-type": "json",
+    "interval": 5,
+    "signal": 9,
+    "format": "{}",
+    "on-click": "~/.local/bin/dev-project infra-toggle",
+    "on-click-middle": "~/.local/bin/dev-project terminal",
+    "on-click-right": "~/.local/bin/dev-project code",
+    "tooltip": true
+  }
+}

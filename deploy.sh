@@ -14,6 +14,36 @@ mkdir -p "$HOME/.local/bin"
 cp "$DOTFILES/hypr/hyprpm-autoupdate.sh" "$HOME/.local/bin/hyprpm-autoupdate.sh"
 chmod +x "$HOME/.local/bin/hyprpm-autoupdate.sh"
 echo "  -> ~/.local/bin/hyprpm-autoupdate.sh"
+cp "$DOTFILES/hypr/reload-desktop.sh" "$HOME/.local/bin/reload-desktop.sh"
+chmod +x "$HOME/.local/bin/reload-desktop.sh"
+echo "  -> ~/.local/bin/reload-desktop.sh"
+
+# Current-project dev workflow.
+mkdir -p "$HOME/.config/dev" "$HOME/.local/bin"
+cp "$DOTFILES/dev/projects.json" "$HOME/.config/dev/projects.json"
+echo "  -> dev/projects.json"
+if [ ! -s "$HOME/.config/dev/current-project" ]; then
+    python3 - "$HOME/.config/dev/projects.json" "$HOME/.config/dev/current-project" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+projects_path = Path(sys.argv[1])
+current_path = Path(sys.argv[2])
+projects = json.loads(projects_path.read_text())
+if projects:
+    current_path.write_text(str(projects[0]["path"]) + "\n")
+PY
+    echo "  -> dev/current-project"
+fi
+cp "$DOTFILES/dev/scripts/dev-project" "$HOME/.local/bin/dev-project"
+chmod +x "$HOME/.local/bin/dev-project"
+echo "  -> ~/.local/bin/dev-project"
+"$HOME/.local/bin/dev-project" scan --quiet
+echo "  -> dev/projects.json scan"
+cp "$DOTFILES/dev/scripts/project-hub-watch" "$HOME/.local/bin/project-hub-watch"
+chmod +x "$HOME/.local/bin/project-hub-watch"
+echo "  -> ~/.local/bin/project-hub-watch"
 
 # Dotfiles sync helper + pacman hook.
 chmod +x "$DOTFILES/scripts/dotfiles-sync.sh" \
@@ -89,10 +119,20 @@ fi
 chmod +x "$QS_CONTAINERS/scripts/"*.sh
 echo "  -> quickshell-containers/"
 
-# Waybar: patch workspace module and Dev Stacks module in modules.json
+# Project picker: owned Quickshell instance for current-project selection.
+QS_PROJECTS="$HOME/.config/quickshell-projects"
+mkdir -p "$QS_PROJECTS"
+if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete "$DOTFILES/dev/quickshell/" "$QS_PROJECTS/"
+else
+    cp -R "$DOTFILES/dev/quickshell/." "$QS_PROJECTS/"
+fi
+echo "  -> quickshell-projects/"
+
+# Waybar: patch workspace and Project Hub modules.
 WAYBAR_MODULES="$HOME/.config/waybar/modules.json"
 if [ -f "$WAYBAR_MODULES" ]; then
-    python3 - "$WAYBAR_MODULES" "$DOTFILES/waybar/modules-workspace-override.jsonc" "$DOTFILES/containers/waybar/module.jsonc" "$HOME/.config/waybar/themes" <<'PY'
+    python3 - "$WAYBAR_MODULES" "$DOTFILES/waybar/modules-workspace-override.jsonc" "$DOTFILES/dev/waybar/module.jsonc" "$HOME/.config/waybar/themes" "$HOME/.config/waybar" <<'PY'
 import json
 import shutil
 import sys
@@ -100,8 +140,9 @@ from pathlib import Path
 
 modules_path = Path(sys.argv[1])
 workspace_override_path = Path(sys.argv[2])
-containers_module_path = Path(sys.argv[3])
+project_module_path = Path(sys.argv[3])
 themes_dir = Path(sys.argv[4])
+waybar_dir = Path(sys.argv[5])
 
 
 def strip_jsonc(text):
@@ -196,62 +237,152 @@ def array_bounds(text, key):
     return None
 
 
-def insert_theme_module(text):
-    bounds = array_bounds(text, "modules-right")
+def module_name(line):
+    return line.strip().rstrip(",").strip().strip('"')
+
+
+def array_lines(text, key):
+    bounds = array_bounds(text, key)
     if not bounds:
-        return text
+        return None
 
     start, end = bounds
-    before = text[: start + 1]
-    array_body = text[start + 1 : end]
-    after = text[end:]
-    lines = array_body.splitlines(keepends=True)
+    return start, end, text[start + 1 : end].splitlines(keepends=True)
 
+
+def item_indent(lines):
     item_indent = "        "
     for line in lines:
         stripped = line.lstrip()
         if stripped.startswith('"'):
             item_indent = line[: len(line) - len(stripped)]
             break
+    return item_indent
 
-    def is_containers(line):
-        return line.strip().rstrip(",").strip().strip('"') == "custom/containers"
 
-    # Drop any existing entry first so re-running re-homes it canonically
-    # (idempotent: a no-op once it's already in the right spot).
-    lines = [line for line in lines if not is_containers(line)]
+def rewrite_array(text, key, transform):
+    details = array_lines(text, key)
+    if not details:
+        return text
+    start, end, lines = details
+    updated_lines = transform(lines)
+    return text[: start + 1] + "".join(updated_lines) + text[end:]
 
-    entry = f'{item_indent}"custom/containers",\n'
 
-    # Preferred home: immediately to the right of the updates module
-    # (left edge of the right-hand island).
-    for index, line in enumerate(lines):
-        if '"custom/updates"' in line:
-            lines.insert(index + 1, entry)
-            return before + "".join(lines) + after
+def array_has(text, key, wanted):
+    details = array_lines(text, key)
+    if not details:
+        return False
+    _, _, lines = details
+    return any(module_name(line) == wanted for line in lines)
 
-    # Fallbacks for themes without an updates module.
-    for index, line in enumerate(lines):
-        if '"custom/notification"' in line:
-            lines.insert(index, entry)
-            return before + "".join(lines) + after
 
-    for index, line in enumerate(lines):
-        if '"tray"' in line:
-            lines.insert(index + 1, entry)
-            return before + "".join(lines) + after
+def remove_modules(text, key, names):
+    return rewrite_array(text, key, lambda lines: [line for line in lines if module_name(line) not in names])
 
-    lines.append(entry)
-    return before + "".join(lines) + after
+
+def insert_project_island(text):
+    managed_modules = {
+        "custom/containers",
+        "custom/current-project",
+        "custom/project-label",
+        "custom/project-action",
+    }
+
+    for key in ("modules-left", "modules-center", "modules-right"):
+        text = remove_modules(text, key, managed_modules)
+
+    # The island lives on the left with the clock. If a theme had the clock on
+    # the right, move it left once and keep subsequent deploys stable.
+    for key in ("modules-center", "modules-right"):
+        text = remove_modules(text, key, {"clock"})
+
+    def transform_left(lines):
+        indent = item_indent(lines)
+        names = [module_name(line) for line in lines]
+        if "clock" not in names:
+            clock_entry = f'{indent}"clock",\n'
+            insert_at = 0
+            for index, name in enumerate(names):
+                if name in {"custom/appmenu", "custom/appmenuicon"}:
+                    insert_at = index + 1
+                    break
+            lines = [*lines]
+            lines.insert(insert_at, clock_entry)
+
+        label_entry = f'{indent}"custom/project-label",\n'
+        action_entry = f'{indent}"custom/project-action",\n'
+        for index, line in enumerate(lines):
+            if module_name(line) == "clock":
+                lines.insert(index + 1, label_entry)
+                lines.insert(index + 2, action_entry)
+                return lines
+
+        lines.append(label_entry)
+        lines.append(action_entry)
+        return lines
+
+    return rewrite_array(text, "modules-left", transform_left)
+
+
+def remove_marked_block(text, start, end):
+    if start not in text or end not in text:
+        return text
+    before, rest = text.split(start, 1)
+    _, after = rest.split(end, 1)
+    return before.rstrip() + "\n\n" + after.lstrip()
+
+
+
+def patch_style(path):
+    if not path.exists():
+        return False
+
+    old_start = "/* dotfiles current-project start */"
+    old_end = "/* dotfiles current-project end */"
+    start = "/* dotfiles project-hub start */"
+    end = "/* dotfiles project-hub end */"
+    block = f"""{start}
+#custom-project-action.running {{
+    color: #8bd99c;
+}}
+
+#custom-project-action.working {{
+    color: #e0bbde;
+}}
+
+#custom-project-action.alert {{
+    color: #ffb4ab;
+}}
+
+#custom-project-action.stopped {{
+    color: #c5c6d0;
+}}
+{end}
+"""
+
+    original = path.read_text()
+    updated = remove_marked_block(original, old_start, old_end)
+    updated = remove_marked_block(updated, start, end)
+    updated = updated.rstrip() + "\n\n" + block
+
+    if updated == original:
+        return False
+
+    backup_once(path)
+    path.write_text(updated)
+    return True
 
 
 modules = load_jsonc(modules_path)
 workspace_override = load_jsonc(workspace_override_path)
-containers_module = load_jsonc(containers_module_path)
+project_module = load_jsonc(project_module_path)
 
 backup_once(modules_path)
 modules["hyprland/workspaces"] = workspace_override["hyprland/workspaces"]
-modules.update(containers_module)
+modules.pop("custom/current-project", None)
+modules.pop("custom/containers", None)
+modules.update(project_module)
 write_json(modules_path, modules)
 
 touched_themes = []
@@ -263,12 +394,12 @@ for config_path in sorted(themes_dir.glob("*/config")):
     if "~/.config/waybar/modules.json" not in includes:
         continue
 
-    modules_right = data.get("modules-right")
-    if not isinstance(modules_right, list):
+    modules_left = data.get("modules-left")
+    if not isinstance(modules_left, list):
         continue
 
     original = config_path.read_text()
-    updated = insert_theme_module(original)
+    updated = insert_project_island(original)
     if updated == original:
         continue
 
@@ -276,15 +407,22 @@ for config_path in sorted(themes_dir.glob("*/config")):
     config_path.write_text(updated)
     touched_themes.append(config_path.name if config_path.parent == themes_dir else config_path.parent.name)
 
+styled = []
+style_paths = {waybar_dir / "style.css", *themes_dir.glob("**/style.css")}
+for style_path in sorted(style_paths):
+    if patch_style(style_path):
+        styled.append(str(style_path.relative_to(waybar_dir)))
+
 print("themes=" + ",".join(touched_themes))
+print("styles=" + ",".join(styled))
 PY
-    echo "  -> waybar/modules.json (workspace + dev stacks patched, one-time backup at modules.json.bak)"
-    echo "  -> waybar/themes/*/config (dev stacks inserted where modules.json is included)"
+    echo "  -> waybar/modules.json (workspace + Project Hub patched, one-time backup at modules.json.bak)"
+    echo "  -> waybar/themes/*/config (Project Hub island inserted where modules.json is included)"
 fi
 
 echo ""
 echo "Done. To apply changes:"
-echo "  - Hyprland: Super+Ctrl+R to reload config (or hyprctl reload)"
-echo "  - Waybar:   Super+Shift+B to reload (or killall waybar && ~/.config/waybar/launch.sh &)"
+echo "  - Desktop shell: Super+Shift+R to reload Hyprland + Waybar"
+echo "  - Hyprland only: Super+Ctrl+R to reload config (or hyprctl reload)"
 echo "  - Kitty:    kill -SIGUSR1 \$(pgrep kitty)  (live reload, no restart needed)"
 echo "  - VSCode:   restore extensions with:  cat vscode/extensions.txt | xargs -L1 code --install-extension"

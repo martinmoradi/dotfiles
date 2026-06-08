@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+POLL_SECONDS = 10
+ALERT_STATES = {"crashed", "unhealthy", "unknown"}
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "project-hub"
+FINGERPRINT_FILE = CACHE_DIR / "current-alert"
+LOCK_FILE = CACHE_DIR / "watch.lock"
+DEV_PROJECT = Path.home() / ".local" / "bin" / "dev-project"
+
+
+def run_dev_project(*args):
+    command = [str(DEV_PROJECT), *args]
+    try:
+        return subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=8,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def load_hub_state():
+    proc = run_dev_project("hub-state")
+    if proc is None or proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+
+
+def exit_suffix(service):
+    exit_code = service.get("exit_code")
+    if exit_code in {None, "", 0, "0"}:
+        return ""
+    return f" (exit {exit_code})"
+
+
+def service_message(service):
+    name = service.get("name") or "service"
+    state = service.get("state") or "unknown"
+    return f"{name} {state}{exit_suffix(service)}"
+
+
+def current_trouble(state):
+    current = state.get("current") or {}
+    infra = current.get("infra") or {}
+    services = []
+    for service in infra.get("services") or []:
+        service_state = str(service.get("state") or "unknown")
+        if service.get("protected") or service_state not in ALERT_STATES:
+            continue
+        services.append(service)
+
+    if not services:
+        return None
+
+    fingerprint = json.dumps(
+        [
+            current.get("id") or current.get("path") or "",
+            [
+                [
+                    service.get("name") or "",
+                    service.get("state") or "",
+                    service.get("exit_code"),
+                ]
+                for service in services
+            ],
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    messages = [service_message(service) for service in services[:3]]
+    if len(services) > 3:
+        messages.append(f"+{len(services) - 3} more")
+
+    return {
+        "fingerprint": fingerprint,
+        "title": f'{current.get("label") or "Project"} infra problem',
+        "body": ", ".join(messages),
+    }
+
+
+def read_previous_fingerprint():
+    try:
+        return FINGERPRINT_FILE.read_text()
+    except FileNotFoundError:
+        return ""
+
+
+def write_fingerprint(value):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if value:
+        FINGERPRINT_FILE.write_text(value)
+    else:
+        try:
+            FINGERPRINT_FILE.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def notify_help():
+    notify_send = shutil.which("notify-send")
+    if not notify_send:
+        return "", ""
+    proc = subprocess.run(
+        [notify_send, "--help"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    return notify_send, proc.stdout or ""
+
+
+def handle_action(action):
+    action = (action or "").strip().splitlines()[-1] if action else ""
+    if action == "hub":
+        run_dev_project("hub")
+    elif action == "terminal":
+        run_dev_project("terminal")
+    elif action == "desktop":
+        desktop = shutil.which("podman-desktop")
+        if desktop:
+            subprocess.Popen([desktop], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def notify(title, body):
+    notify_send, help_text = notify_help()
+    if not notify_send:
+        return
+
+    supports_actions = "--action" in help_text and "--wait" in help_text
+    if not supports_actions:
+        subprocess.Popen(
+            [notify_send, "--app-name=Project Hub", "--urgency=critical", title, body],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return
+
+    args = [
+        notify_send,
+        "--app-name=Project Hub",
+        "--urgency=critical",
+        "--wait",
+        "--action=hub=Open Project Hub",
+        "--action=terminal=Terminal",
+        "--action=desktop=Podman Desktop",
+        title,
+        body,
+    ]
+
+    def wait_for_action():
+        proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        handle_action(proc.stdout)
+
+    threading.Thread(target=wait_for_action, daemon=True).start()
+
+
+def check_once():
+    state = load_hub_state()
+    if state is None:
+        return
+
+    trouble = current_trouble(state)
+    if trouble is None:
+        write_fingerprint("")
+        return
+
+    previous = read_previous_fingerprint()
+    if trouble["fingerprint"] == previous:
+        return
+
+    write_fingerprint(trouble["fingerprint"])
+    notify(trouble["title"], trouble["body"])
+
+
+def acquire_lock():
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    lock = LOCK_FILE.open("w")
+    if fcntl is None:
+        return lock
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(0)
+    return lock
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="project-hub-watch")
+    parser.add_argument("--once", action="store_true")
+    args = parser.parse_args()
+
+    lock = acquire_lock()
+    try:
+        check_once()
+        if args.once:
+            return
+        while True:
+            time.sleep(POLL_SECONDS)
+            check_once()
+    finally:
+        lock.close()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)
