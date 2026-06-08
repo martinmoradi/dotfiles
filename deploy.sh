@@ -65,11 +65,6 @@ cp "$DOTFILES/hypr/clip-image-paste.sh" "$HOME/.local/bin/clip-image-paste.sh"
 chmod +x "$HOME/.local/bin/clip-image-paste.sh"
 echo "  -> ~/.local/bin/clip-image-paste.sh"
 
-# Kitty smart paste: text paste normally, image paste as a typed file path.
-cp "$DOTFILES/kitty/smart-paste.sh" "$HOME/.local/bin/kitty-smart-paste.sh"
-chmod +x "$HOME/.local/bin/kitty-smart-paste.sh"
-echo "  -> ~/.local/bin/kitty-smart-paste.sh"
-
 # Area screenshot to image clipboard (bound to Super+S).
 cp "$DOTFILES/hypr/screenshot-area-clipboard.sh" "$HOME/.local/bin/screenshot-area-clipboard.sh"
 chmod +x "$HOME/.local/bin/screenshot-area-clipboard.sh"

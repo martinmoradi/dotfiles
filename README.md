@@ -25,7 +25,7 @@ dotfiles-sync --all
 - `waybar/` - shared Waybar module overrides used by deploy-time patching.
 - `project-hub/` - project registry, Quickshell UI, Waybar modules, watcher, and Dev Stacks backend.
 - `fish/` - Fish shell environment and aliases.
-- `kitty/` - Kitty config, smart paste, and custom tab bar.
+- `kitty/` - Kitty config and custom tab bar.
 - `vscode/` - VS Code user settings and extension snapshot.
 - `packages/` - package snapshots for restore or audit.
 - `pacman/` - pacman hook templates for package snapshot sync.
