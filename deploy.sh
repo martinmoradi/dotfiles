@@ -18,10 +18,10 @@ cp "$DOTFILES/hypr/reload-desktop.sh" "$HOME/.local/bin/reload-desktop.sh"
 chmod +x "$HOME/.local/bin/reload-desktop.sh"
 echo "  -> ~/.local/bin/reload-desktop.sh"
 
-# Current-project dev workflow.
+# Project Hub: current-project workflow and infra controls.
 mkdir -p "$HOME/.config/dev" "$HOME/.local/bin"
-cp "$DOTFILES/dev/projects.json" "$HOME/.config/dev/projects.json"
-echo "  -> dev/projects.json"
+cp "$DOTFILES/project-hub/projects.json" "$HOME/.config/dev/projects.json"
+echo "  -> project-hub/projects.json"
 if [ ! -s "$HOME/.config/dev/current-project" ]; then
     python3 - "$HOME/.config/dev/projects.json" "$HOME/.config/dev/current-project" <<'PY'
 import json
@@ -36,12 +36,12 @@ if projects:
 PY
     echo "  -> dev/current-project"
 fi
-cp "$DOTFILES/dev/scripts/dev-project" "$HOME/.local/bin/dev-project"
+cp "$DOTFILES/project-hub/scripts/dev-project" "$HOME/.local/bin/dev-project"
 chmod +x "$HOME/.local/bin/dev-project"
 echo "  -> ~/.local/bin/dev-project"
 "$HOME/.local/bin/dev-project" scan --quiet
-echo "  -> dev/projects.json scan"
-cp "$DOTFILES/dev/scripts/project-hub-watch" "$HOME/.local/bin/project-hub-watch"
+echo "  -> project-hub scan"
+cp "$DOTFILES/project-hub/scripts/project-hub-watch" "$HOME/.local/bin/project-hub-watch"
 chmod +x "$HOME/.local/bin/project-hub-watch"
 echo "  -> ~/.local/bin/project-hub-watch"
 
@@ -109,24 +109,24 @@ cp "$DOTFILES/sidepad/sidepad" "$HOME/.config/sidepad/sidepad"
 chmod +x "$HOME/.config/sidepad/sidepad"
 echo "  -> sidepad/sidepad"
 
-# Dev Stacks: owned Quickshell instance for the Waybar infra pulse
+# Project Hub infra backend: owned Quickshell instance for compatibility.
 QS_CONTAINERS="$HOME/.config/quickshell-containers"
 mkdir -p "$QS_CONTAINERS"
 if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete "$DOTFILES/containers/" "$QS_CONTAINERS/"
+    rsync -a --delete "$DOTFILES/project-hub/containers/" "$QS_CONTAINERS/"
 else
-    cp -R "$DOTFILES/containers/." "$QS_CONTAINERS/"
+    cp -R "$DOTFILES/project-hub/containers/." "$QS_CONTAINERS/"
 fi
 chmod +x "$QS_CONTAINERS/scripts/"*.sh
 echo "  -> quickshell-containers/"
 
-# Project picker: owned Quickshell instance for current-project selection.
+# Project Hub picker: owned Quickshell instance for current-project selection.
 QS_PROJECTS="$HOME/.config/quickshell-projects"
 mkdir -p "$QS_PROJECTS"
 if command -v rsync >/dev/null 2>&1; then
-    rsync -a --delete "$DOTFILES/dev/quickshell/" "$QS_PROJECTS/"
+    rsync -a --delete "$DOTFILES/project-hub/quickshell/" "$QS_PROJECTS/"
 else
-    cp -R "$DOTFILES/dev/quickshell/." "$QS_PROJECTS/"
+    cp -R "$DOTFILES/project-hub/quickshell/." "$QS_PROJECTS/"
 fi
 echo "  -> quickshell-projects/"
 
@@ -136,7 +136,7 @@ if [ -f "$WAYBAR_MODULES" ]; then
     python3 "$DOTFILES/scripts/patch-waybar-project-hub.py" \
         "$WAYBAR_MODULES" \
         "$DOTFILES/waybar/modules-workspace-override.jsonc" \
-        "$DOTFILES/dev/waybar/module.jsonc" \
+        "$DOTFILES/project-hub/waybar/module.jsonc" \
         "$HOME/.config/waybar/themes" \
         "$HOME/.config/waybar"
     echo "  -> waybar/modules.json (workspace + Project Hub patched, one-time backup at modules.json.bak)"

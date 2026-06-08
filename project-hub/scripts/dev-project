@@ -49,13 +49,13 @@ def local_repo_path(*parts):
 def containers_state_script():
     if CONTAINERS_STATE.exists():
         return CONTAINERS_STATE
-    return local_repo_path("containers", "scripts", "state.sh") or CONTAINERS_STATE
+    return local_repo_path("project-hub", "containers", "scripts", "state.sh") or CONTAINERS_STATE
 
 
 def containers_control_script():
     if CONTAINERS_CONTROL.exists():
         return CONTAINERS_CONTROL
-    return local_repo_path("containers", "scripts", "control.sh") or CONTAINERS_CONTROL
+    return local_repo_path("project-hub", "containers", "scripts", "control.sh") or CONTAINERS_CONTROL
 
 
 def load_projects():

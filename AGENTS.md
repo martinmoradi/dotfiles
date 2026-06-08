@@ -20,15 +20,15 @@ machine config plus custom local tools, not as a generic dotfiles template.
 ```bash
 ./deploy.sh
 ./snapshot.sh
-python3 -m py_compile dev/scripts/dev-project dev/scripts/project-hub-watch scripts/patch-waybar-project-hub.py
-bash -n deploy.sh containers/scripts/control.sh containers/scripts/state.sh containers/scripts/status.sh hypr/reload-desktop.sh
+python3 -m py_compile project-hub/scripts/dev-project project-hub/scripts/project-hub-watch scripts/patch-waybar-project-hub.py
+bash -n deploy.sh project-hub/containers/scripts/control.sh project-hub/containers/scripts/state.sh project-hub/containers/scripts/status.sh hypr/reload-desktop.sh
 dev-project hub-state | python3 -m json.tool >/dev/null
 ```
 
 ## Structure
 
-- `dev/` owns Project Hub UI, registry, Waybar modules, and watcher scripts.
-- `containers/` remains the Podman/compose backend used by Project Hub.
+- `project-hub/` owns Project Hub UI, registry, Waybar modules, watcher scripts,
+  and the Podman/compose backend.
 - `scripts/` contains repo automation and deploy helpers.
 - `deploy.sh` is the main repo-to-machine entrypoint.
 - `snapshot.sh` is the machine-to-repo capture script.

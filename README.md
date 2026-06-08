@@ -23,8 +23,7 @@ dotfiles-sync --all
 
 - `hypr/` - Hyprland custom config, desktop reload, screenshots, clipboard image helpers.
 - `waybar/` - shared Waybar module overrides used by deploy-time patching.
-- `dev/` - Project Hub: project registry, Quickshell UI, Waybar modules, watcher.
-- `containers/` - Dev Stacks backend used by Project Hub for Podman/compose state and actions.
+- `project-hub/` - project registry, Quickshell UI, Waybar modules, watcher, and Dev Stacks backend.
 - `fish/` - Fish shell environment and aliases.
 - `kitty/` - Kitty config, smart paste, and custom tab bar.
 - `vscode/` - VS Code user settings and extension snapshot.
@@ -50,7 +49,9 @@ installed packages, VS Code extensions, and monitor layout. Capture those with
 
 Project Hub is the main custom workflow in this repo. It discovers projects
 under `~/src/pro` and `~/src/perso`, keeps a current-project registry, exposes
-Waybar state, and uses the Dev Stacks backend for per-project infra controls.
+Waybar state, and uses the bundled Dev Stacks backend for per-project infra
+controls.
 
-The Quickshell install target remains `~/.config/quickshell-projects` for
+The source lives in `project-hub/`. The Quickshell install targets remain
+`~/.config/quickshell-projects` and `~/.config/quickshell-containers` for
 compatibility.

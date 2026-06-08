@@ -20,26 +20,26 @@ This keeps simple things simple. If a future task says "change Kitty" or
 
 ## What To Improve Next
 
-The custom workflow code is where structure can improve.
+The custom workflow now lives in `project-hub/`. That folder is the first
+product-shaped area of the repo: it has a CLI, UI, Waybar integration, registry,
+infra backend, and notifications.
 
 1. Keep extracting deploy helpers when logic grows beyond plain file copies.
    `scripts/patch-waybar-project-hub.py` is the first example.
-2. Consider merging `dev/` and `containers/` into a single `project-hub/`
-   folder once the UI and backend have settled.
-3. Consider splitting `deploy.sh` into install sections only if it starts
+2. Consider splitting `deploy.sh` into install sections only if it starts
    gaining more real logic:
    - desktop shell
    - project hub
    - terminal/shell/editor
    - system sync
-4. Keep `packages/` and `pacman/` separate. One is state, the other is install
+3. Keep `packages/` and `pacman/` separate. One is state, the other is install
    machinery.
 
 ## Candidate Future Shape
 
 ```text
 project-hub/
-  registry/
+  projects.json
   quickshell/
   scripts/
   waybar/

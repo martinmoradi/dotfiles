@@ -23,17 +23,17 @@ mirror live config targets, while others are local tools that get installed into
 
 ## Project Workflow
 
-- `dev/` - Project Hub:
+- `project-hub/` - Project Hub:
   - `projects.json` is the repo seed for the project registry.
   - `scripts/dev-project` is the CLI and Waybar state entrypoint.
   - `scripts/project-hub-watch` watches current-project infra and sends
     notifications on new non-protected trouble.
   - `quickshell/` is installed to `~/.config/quickshell-projects`.
   - `waybar/module.jsonc` defines the Project Hub Waybar modules.
-- `containers/` - Dev Stacks backend:
-  - `scripts/state.sh` reads Podman/compose state.
-  - `scripts/control.sh` starts and stops projects or services.
-  - Quickshell files are still installed for backend compatibility.
+  - `containers/scripts/state.sh` reads Podman/compose state.
+  - `containers/scripts/control.sh` starts and stops projects or services.
+  - `containers/` is still installed to `~/.config/quickshell-containers` for
+    backend compatibility.
 
 ## Shell, Terminal, Editor
 
