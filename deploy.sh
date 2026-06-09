@@ -62,10 +62,11 @@ if [ -f "$DOTFILES/pacman/99-dotfiles-sync.hook.in" ]; then
     fi
 fi
 
-# Clipboard-image paster (bound to Super+Shift+V in custom.conf). Needs wtype.
-cp "$DOTFILES/hypr/clip-image-paste.sh" "$HOME/.local/bin/clip-image-paste.sh"
-chmod +x "$HOME/.local/bin/clip-image-paste.sh"
-echo "  -> ~/.local/bin/clip-image-paste.sh"
+# Smart clipboard paste (bound to Ctrl+V in kitty/custom.conf): image -> typed
+# file path, text -> kitty bracketed paste. Needs wtype + kitty remote control.
+cp "$DOTFILES/kitty/clip-smart-paste.sh" "$HOME/.local/bin/clip-smart-paste.sh"
+chmod +x "$HOME/.local/bin/clip-smart-paste.sh"
+echo "  -> ~/.local/bin/clip-smart-paste.sh"
 
 # Area screenshot to image clipboard (bound to Super+S).
 cp "$DOTFILES/hypr/screenshot-area-clipboard.sh" "$HOME/.local/bin/screenshot-area-clipboard.sh"
