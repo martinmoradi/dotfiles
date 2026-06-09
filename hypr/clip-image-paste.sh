@@ -7,13 +7,14 @@
 # file's path into the focused window (via wtype). Claude Code auto-detects
 # the path and loads the image; for Codex, pass the printed path to --image.
 #
-# Bound to Ctrl+Shift+V in kitty/custom.conf. Needs: wl-clipboard, wtype.
+# Bound to Super+V in hypr/custom.conf. Needs: wl-clipboard, wtype.
 set -euo pipefail
 
-# Give the triggering keypress a moment to release before we synthesize input.
-# Without this, the still-held modifiers (Ctrl+Shift) get folded into every
-# wtype keystroke and the path never lands in the prompt.
-sleep 0.08
+# Wait for the triggering keypress to release before we synthesize input. If
+# Super is still held when wtype runs, the path's digits become Super+N
+# workspace switches (and other chars become Super chords) — the window flies
+# across workspaces instead of the path landing in the prompt.
+sleep 0.15
 
 dir="$HOME/.cache/clip-images"
 mkdir -p "$dir"
