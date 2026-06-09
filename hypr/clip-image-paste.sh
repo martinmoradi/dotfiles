@@ -7,14 +7,14 @@
 # file's path into the focused window (via wtype). Claude Code auto-detects
 # the path and loads the image; for Codex, pass the printed path to --image.
 #
-# Bound to Super+V in hypr/custom.conf. Needs: wl-clipboard, wtype.
+# Bound to Ctrl+Shift+S in kitty/custom.conf (kitty `launch`). Needs: wl-clipboard, wtype.
 set -euo pipefail
 
-# Wait for the triggering keypress to release before we synthesize input. If
-# Super is still held when wtype runs, the path's digits become Super+N
-# workspace switches (and other chars become Super chords) — the window flies
-# across workspaces instead of the path landing in the prompt.
-sleep 0.15
+# Wait for the triggering keypress to release before we synthesize input, so the
+# still-held modifiers aren't folded into the typed path. (This is also why the
+# binding must not use Super: a held Super would turn the path into a burst of
+# Super+key launcher/workspace chords.)
+sleep 0.12
 
 dir="$HOME/.cache/clip-images"
 mkdir -p "$dir"
