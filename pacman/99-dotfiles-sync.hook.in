@@ -11,4 +11,4 @@ When = PostTransaction
 Depends = bash
 Depends = systemd
 Depends = util-linux
-Exec = @DOTFILES@/scripts/dotfiles-pacman-hook.sh
+Exec = @HOOK_EXEC@
