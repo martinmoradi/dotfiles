@@ -16,7 +16,7 @@ end
 
 # Projects
 function jukkai --description 'Go to the Jukkai app project'
-    cd ~/src/pro/jukkai/app
+    cd ~/src/pro/jukkai
 end
 
 # Apps
