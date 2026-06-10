@@ -1,0 +1,112 @@
+# Martin's personal zsh config - loaded after ML4W's 00-30 range
+# Mirrors the role of fish/conf.d/50-martin-*.fish
+# -----------------------------------------------------
+
+# --- PATH ---
+export BUN_INSTALL="$HOME/.bun"
+path=("$BUN_INSTALL/bin" /usr/lib/ccache/bin/ $path)
+export PATH
+
+# --- History (upgrade from ML4W defaults) ---
+HISTSIZE=100000
+SAVEHIST=100000
+setopt HIST_IGNORE_ALL_DUPS     # Remove older duplicate entries from history
+setopt HIST_FIND_NO_DUPS        # Skip duplicates when searching
+setopt HIST_SAVE_NO_DUPS        # Don't save duplicates to the history file
+setopt HIST_REDUCE_BLANKS       # Strip superfluous blanks from history entries
+setopt SHARE_HISTORY            # Share history across all zsh sessions in real time
+setopt HIST_IGNORE_SPACE        # Commands prefixed with space stay private
+setopt EXTENDED_HISTORY         # Save timestamp and duration for each entry
+
+# --- Shell behavior ---
+setopt AUTO_CD                  # Type a directory name to cd into it
+setopt NO_BEEP                  # No terminal beeping
+setopt COMPLETE_IN_WORD         # Complete at cursor, not just at end of word
+setopt ALWAYS_TO_END            # Move cursor to end of word after completion
+
+# Ctrl+W stops at slash boundaries (slash, dot, dash - not just spaces)
+WORDCHARS='*?_-.[]~=&;!#$%^(){}<>'
+
+# --- Completion styling ---
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'    # Case-insensitive
+zstyle ':completion:*' menu select                          # Arrow-key selection menu
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"    # Colorize completion list
+zstyle ':completion:*' group-name ''                        # Group by category
+zstyle ':completion:*:descriptions' format '%F{yellow}-- %d --%f'
+zstyle ':completion:*:warnings'     format '%F{red}-- no matches for: %d --%f'
+zstyle ':completion:*:git-checkout:*' sort false            # Don't sort git branches
+
+# --- Autosuggestions ---
+ZSH_AUTOSUGGEST_STRATEGY=(history completion)    # Try history first, then completions
+ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE=20               # Don't suggest for very long lines
+ZSH_AUTOSUGGEST_USE_ASYNC=1                      # Non-blocking suggestion lookup
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=244'         # Subtle gray suggestions
+
+# --- Syntax highlighting colors ---
+ZSH_HIGHLIGHT_STYLES[command]='fg=green,bold'
+ZSH_HIGHLIGHT_STYLES[alias]='fg=green'
+ZSH_HIGHLIGHT_STYLES[path]='fg=cyan'
+ZSH_HIGHLIGHT_STYLES[unknown-token]='fg=red,bold'
+ZSH_HIGHLIGHT_STYLES[single-quoted-argument]='fg=yellow'
+ZSH_HIGHLIGHT_STYLES[double-quoted-argument]='fg=yellow'
+ZSH_HIGHLIGHT_STYLES[redirection]='fg=magenta'
+ZSH_HIGHLIGHT_STYLES[comment]='fg=240'
+
+# --- History substring search ---
+HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_FOUND='bg=yellow,fg=black,bold'
+HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_NOT_FOUND='bg=red,fg=white,bold'
+HISTORY_SUBSTRING_SEARCH_FUZZY=1                 # Allow fuzzy matching (like fish)
+
+# Reinforce keybindings after all plugins load (OMZ plugin sets these, but
+# syntax-highlighting must be sourced last or it resets them)
+bindkey '^[[A' history-substring-search-up
+bindkey '^[[B' history-substring-search-down
+
+# --- Other key bindings ---
+bindkey '^ '    autosuggest-accept    # Ctrl+Space accepts suggestion (alt to →)
+bindkey '^[.'   insert-last-word      # Alt+. inserts last argument of prev command
+bindkey '^[[1;5C' forward-word        # Ctrl+Right jump word forward
+bindkey '^[[1;5D' backward-word       # Ctrl+Left jump word backward
+bindkey '^H'    backward-kill-word    # Ctrl+Backspace kills word backward
+bindkey '^[[3;5~' kill-word           # Ctrl+Delete kills word forward
+
+# --- Atuin (shell history database - replaces Ctrl+R with TUI search) ---
+if command -v atuin &>/dev/null; then
+    eval "$(atuin init zsh --disable-up-arrow)"
+fi
+
+# --- Aliases ---
+alias txt='gnome-text-editor'
+alias text='gnome-text-editor'
+alias claudex='claude --dangerously-skip-permissions'
+
+# --- Functions ---
+
+gmain() {
+    git checkout main && git pull
+}
+
+jukkai() {
+    cd ~/src/pro/jukkai
+}
+
+# Claude Code wrapped with a systemd sleep inhibitor so the machine won't
+# suspend during a long-running Claude task (mirrors fish/functions/claude.fish).
+# whence -p finds the binary, ignoring this function, preventing infinite recursion.
+claude() {
+    local bin
+    bin=$(whence -p claude 2>/dev/null) || { echo "claude: binary not found in PATH" >&2; return 1; }
+    systemd-inhibit --what=sleep --who='Claude Code' --why='Long-running task in progress' \
+        --mode=block "$bin" "$@"
+}
+
+# Codex wrapped identically.
+codex() {
+    local bin
+    bin=$(whence -p codex 2>/dev/null) || { echo "codex: binary not found in PATH" >&2; return 1; }
+    systemd-inhibit --what=sleep --who='Codex' --why='Long-running task in progress' \
+        --mode=block "$bin" "$@"
+}
+
+# --- UV (Python package manager) env ---
+[[ -f "$HOME/.local/bin/env" ]] && source "$HOME/.local/bin/env"

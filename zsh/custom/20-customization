@@ -1,0 +1,50 @@
+# Overrides ML4W's 20-customization, which assumed ~/.oh-my-zsh (doesn't exist).
+# Uses the system OMZ at /usr/share/oh-my-zsh instead.
+# -----------------------------------------------------
+
+export ZSH="/usr/share/oh-my-zsh"
+DISABLE_AUTO_UPDATE="true"    # We update OMZ via pacman (oh-my-zsh-git)
+COMPLETION_WAITING_DOTS="true"
+
+plugins=(
+    git                     # Git aliases, prompt info, completions
+    sudo                    # Esc+Esc to prepend/strip sudo
+    archlinux               # paru/yay/pacman aliases
+    colored-man-pages       # Colorize man pages
+    extract                 # `x file.tar.gz` - universal archive extractor
+    fancy-ctrl-z            # Ctrl+Z to toggle foreground/background
+    safe-paste              # Multiline paste safety: newlines don't auto-execute
+    fzf                     # Ctrl+R fuzzy history, Ctrl+T file, Alt+C cd
+    history-substring-search # Up/down arrow searches history by typed prefix
+    systemd                 # Systemd convenience functions
+    kitty                   # Kitty terminal completions
+    bun                     # Bun completions
+    uv                      # UV python manager completions
+    copybuffer              # Ctrl+O copies current cmdline to clipboard
+    copyfile                # `copyfile <file>` copies file content
+    copypath                # `copypath` copies current path
+    dirhistory              # Alt+Left/Right/Up for directory nav history
+    zoxide                  # Smart cd - `z <partial-name>` jumps to frecent dirs
+    podman                  # Podman completions
+)
+
+source "$ZSH/oh-my-zsh.sh"
+
+# System zsh plugins (not bundled in OMZ; installed as system packages)
+[[ -f /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh ]] && \
+    source /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh
+
+[[ -f /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]] && \
+    source /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+
+# FZF shell integration (Ctrl+R, Ctrl+T, Alt+C)
+source <(fzf --zsh)
+
+# History
+HISTFILE=~/.zsh_history
+HISTSIZE=10000
+SAVEHIST=10000
+setopt appendhistory
+
+# Prompt - oh-my-posh with your zen theme (same as fish)
+eval "$(oh-my-posh init zsh --config $HOME/.config/ohmyposh/zen.toml)"

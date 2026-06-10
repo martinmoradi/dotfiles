@@ -102,6 +102,19 @@ for f in "$DOTFILES"/fish/conf.d/*.fish; do
     echo "  -> fish/conf.d/$(basename "$f")"
 done
 
+# Zsh conf.d: personal additions (50-martin etc.)
+for f in "$DOTFILES"/zsh/conf.d/*; do
+    cp "$f" "$HOME/.config/zshrc/$(basename "$f")"
+    echo "  -> zshrc/$(basename "$f")"
+done
+
+# Zsh custom: overrides that replace ML4W defaults (e.g. fix broken OMZ path)
+mkdir -p "$HOME/.config/zshrc/custom"
+for f in "$DOTFILES"/zsh/custom/*; do
+    cp "$f" "$HOME/.config/zshrc/custom/$(basename "$f")"
+    echo "  -> zshrc/custom/$(basename "$f")"
+done
+
 # Sidepad: patched for multi-monitor absolute positioning
 cp "$DOTFILES/sidepad/sidepad" "$HOME/.config/sidepad/sidepad"
 chmod +x "$HOME/.config/sidepad/sidepad"
