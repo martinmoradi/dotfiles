@@ -9,7 +9,7 @@
   "editor.cursorBlinking": "smooth",
   "editor.cursorSmoothCaretAnimation": "on",
   "editor.smoothScrolling": true,
-  "editor.fontFamily": "'DankMono Thick Nerd Font', 'DankMono Nerd Font', monospace",
+  "editor.fontFamily": "'OperatorMonoLig Nerd Font Mono', 'DankMono Thick Nerd Font', monospace",
   "editor.fontLigatures": true,
   "editor.fontSize": 18,
   "editor.lineHeight": 26,
@@ -138,7 +138,7 @@
   "tailwindCSS.rootFontSize": 10,
 
   // ---------------------------------------------------------------------
-  // Typography hierarchy (Dank Mono)
+  // Typography hierarchy (Operator Mono Lig — cursive italics)
   //
   //   italic (script) = "voice": comments, decorators, parameters,
   //                     self/this, import glue, JSX/HTML attributes
