@@ -24,7 +24,6 @@ dotfiles-sync --all
 - `hypr/` - Hyprland custom config, desktop reload, screenshots, clipboard image helpers.
 - `waybar/` - shared Waybar module overrides used by deploy-time patching.
 - `project-hub/` - project registry, Quickshell UI, Waybar modules, watcher, and Dev Stacks backend.
-- `fish/` - Fish shell environment and aliases.
 - `kitty/` - Kitty config and custom tab bar.
 - `vscode/` - VS Code user settings and extension snapshot.
 - `packages/` - package snapshots for restore or audit.

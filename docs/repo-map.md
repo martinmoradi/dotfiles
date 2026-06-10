@@ -37,7 +37,6 @@ mirror live config targets, while others are local tools that get installed into
 
 ## Shell, Terminal, Editor
 
-- `fish/` - Martin-owned Fish files under `conf.d`.
 - `kitty/` - Kitty config plus paste/tab-bar helpers.
 - `vscode/` - VS Code user settings and extension list.
 
@@ -58,7 +57,6 @@ Deploy writes to:
 - `~/.config/quickshell-projects`
 - `~/.config/waybar`
 - `~/.config/kitty`
-- `~/.config/fish/conf.d`
 - `~/.config/Code/User`
 - `~/.local/bin`
 

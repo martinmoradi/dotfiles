@@ -1,5 +1,4 @@
 # Martin's personal zsh config - loaded after ML4W's 00-30 range
-# Mirrors the role of fish/conf.d/50-martin-*.fish
 # -----------------------------------------------------
 
 # --- PATH ---
@@ -60,7 +59,7 @@ ZSH_HIGHLIGHT_STYLES[comment]='fg=240'
 # --- History substring search ---
 HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_FOUND='bg=yellow,fg=black,bold'
 HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_NOT_FOUND='bg=red,fg=white,bold'
-HISTORY_SUBSTRING_SEARCH_FUZZY=1                 # Allow fuzzy matching (like fish)
+HISTORY_SUBSTRING_SEARCH_FUZZY=1                 # Allow fuzzy matching
 
 # Reinforce keybindings after all plugins load (OMZ plugin sets these, but
 # syntax-highlighting must be sourced last or it resets them)
@@ -109,7 +108,7 @@ _p_completion() {
 compdef _p_completion p 2>/dev/null || true
 
 # Claude Code wrapped with a systemd sleep inhibitor so the machine won't
-# suspend during a long-running Claude task (mirrors fish/functions/claude.fish).
+# suspend during a long-running Claude task.
 # whence -p finds the binary, ignoring this function, preventing infinite recursion.
 claude() {
     local bin

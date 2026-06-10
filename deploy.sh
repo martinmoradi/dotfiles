@@ -98,11 +98,10 @@ echo "  -> kitty/custom.conf"
 cp "$DOTFILES/kitty/tab_bar.py" "$HOME/.config/kitty/tab_bar.py"
 echo "  -> kitty/tab_bar.py"
 
-# Fish conf.d (only our 50-martin-* files, don't clobber ml4w's)
-for f in "$DOTFILES"/fish/conf.d/*.fish; do
-    cp "$f" "$HOME/.config/fish/conf.d/"
-    echo "  -> fish/conf.d/$(basename "$f")"
-done
+# Remove legacy Martin-owned shell files from the previous shell setup.
+rm -f "$HOME/.config/fish/conf.d/50-martin-aliases.fish" \
+    "$HOME/.config/fish/conf.d/50-martin-env.fish"
+echo "  -> removed legacy fish conf.d files"
 
 # Zsh conf.d: personal additions (50-martin etc.)
 for f in "$DOTFILES"/zsh/conf.d/*; do

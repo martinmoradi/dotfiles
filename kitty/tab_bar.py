@@ -31,7 +31,7 @@ ICONS = (
     (("python", "python3", "pip", "uv", "poetry"),             ""),  #  python
     (("docker", "podman", "kubectl"),                          ""),  #  docker
     (("ssh", "mosh"),                                          ""),  #  ssh (lock)
-    (("fish", "bash", "zsh", "sh"),                            DEFAULT_ICON),  # idle shell
+    (("bash", "zsh", "sh"),                                    DEFAULT_ICON),  # idle shell
 )
 
 

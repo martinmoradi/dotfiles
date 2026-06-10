@@ -24,7 +24,6 @@ btop
 btrfs-assistant
 btrfs-progs
 btrfsmaintenance
-cachyos-fish-config
 cachyos-hello
 cachyos-hooks
 cachyos-kernel-manager

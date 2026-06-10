@@ -10,7 +10,7 @@ Keep top-level folders that mirror familiar live config targets:
 
 - `hypr/`
 - `waybar/`
-- `fish/`
+- `zsh/`
 - `kitty/`
 - `vscode/`
 - `sddm/`
@@ -52,7 +52,7 @@ desktop/
   sidepad/
 
 terminal/
-  fish/
+  zsh/
   kitty/
 
 system/

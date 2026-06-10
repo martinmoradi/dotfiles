@@ -46,5 +46,5 @@ HISTSIZE=10000
 SAVEHIST=10000
 setopt appendhistory
 
-# Prompt - oh-my-posh with your zen theme (same as fish)
+# Prompt - oh-my-posh with your zen theme
 eval "$(oh-my-posh init zsh --config $HOME/.config/ohmyposh/zen.toml)"
