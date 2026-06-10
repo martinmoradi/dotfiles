@@ -7,13 +7,18 @@
     "source.organizeImports": "never",
   },
   "editor.cursorBlinking": "smooth",
-  "editor.fontFamily": "MonoLisa",
+  "editor.cursorSmoothCaretAnimation": "on",
+  "editor.smoothScrolling": true,
+  "editor.fontFamily": "'DankMono Thick Nerd Font', 'DankMono Nerd Font', monospace",
   "editor.fontLigatures": true,
   "editor.fontSize": 18,
+  "editor.lineHeight": 26,
   "editor.formatOnPaste": true,
   "editor.formatOnSave": true,
   "editor.guides.bracketPairs": true,
-  "editor.lineHeight": 26,
+  "editor.stickyScroll.enabled": true,
+  "editor.linkedEditing": true,
+  "editor.inlayHints.enabled": "offUnlessPressed",
   "editor.minimap.enabled": false,
   "editor.multiCursorModifier": "ctrlCmd",
   "editor.rulers": [80, 120],
@@ -27,6 +32,7 @@
   },
   "editor.inlineSuggest.enabled": true,
   "color-highlight.markerType": "dot-before",
+  "workbench.list.smoothScrolling": true,
 
   // Language-specific settings
   "[html]": {
@@ -50,6 +56,10 @@
   "[prisma]": {
     "editor.defaultFormatter": "Prisma.prisma",
   },
+  "[markdown]": {
+    // Trailing double-space is a hard line break in Markdown
+    "files.trimTrailingWhitespace": false,
+  },
 
   // File settings
   "files.associations": {
@@ -70,8 +80,9 @@
   "typescript.preferences.importModuleSpecifier": "non-relative",
 
   // Terminal settings
-  "terminal.integrated.fontFamily": "monospace",
+  "terminal.integrated.fontFamily": "'DankMono Nerd Font Mono'",
   "terminal.integrated.fontSize": 14,
+  "terminal.integrated.smoothScrolling": true,
   "workbench.editor.highlightModifiedTabs": true,
   "workbench.startupEditor": "none",
   "window.title": "${activeEditorMedium}${separator}${rootName}",
@@ -83,6 +94,7 @@
 
   // Diff editor settings
   "diffEditor.ignoreTrimWhitespace": false,
+  "diffEditor.experimental.showMoves": true,
 
   // ESLint settings
   "eslint.validate": [
@@ -125,37 +137,109 @@
   },
   "tailwindCSS.rootFontSize": 10,
 
-  // Token color customizations
+  // ---------------------------------------------------------------------
+  // Typography hierarchy (Dank Mono)
+  //
+  //   italic (script) = "voice": comments, decorators, parameters,
+  //                     self/this, import glue, JSX/HTML attributes
+  //   bold            = "structure": declarations of functions, classes,
+  //                     types; headings; CSS selectors
+  //   regular         = everything else, including keywords (Night Owl
+  //                     italicizes them by default; reset below)
+  // ---------------------------------------------------------------------
+
+  // Semantic tokens: TypeScript (tsserver) + Python (Pylance)
+  "editor.semanticHighlighting.enabled": true,
+  "editor.semanticTokenColorCustomizations": {
+    "enabled": true,
+    "rules": {
+      // Italic — the sparse, scripted accents
+      "parameter": { "italic": true },
+      "selfParameter": { "italic": true },
+      "clsParameter": { "italic": true },
+      "decorator": { "italic": true },
+      "typeParameter": { "italic": true },
+      "*.static": { "italic": true },
+
+      // Bold — where things are *defined*, not where they are used
+      "function.declaration": { "bold": true },
+      "method.declaration": { "bold": true },
+      "magicFunction.declaration": { "bold": true },
+      "class.declaration": { "bold": true },
+      "interface.declaration": { "bold": true },
+      "enum.declaration": { "bold": true },
+      "struct.declaration": { "bold": true },
+      "type.declaration": { "bold": true },
+      "namespace.declaration": { "bold": true },
+
+      "*.deprecated": { "strikethrough": true },
+    },
+  },
+
+  // TextMate tokens: CSS, shell, markdown, and anything without an LSP.
+  // Later rules win, so: 1) reset Night Owl's italics, 2) italics, 3) bold.
   "editor.tokenColorCustomizations": {
     "textMateRules": [
+      // 1 — reset the theme's liberal italics back to upright
+      {
+        "scope": [
+          "keyword",
+          "storage",
+          "storage.type",
+          "constant",
+          "support",
+          "entity.name.type",
+          "entity.name.class",
+          "entity.name.function",
+          "variable",
+          "string",
+          "markup.deleted",
+        ],
+        "settings": { "fontStyle": "" },
+      },
+
+      // 2 — italics: prose, annotations, and "glue" words
       {
         "scope": [
           "comment",
-          "entity.name.type.class",
-          "keyword",
-          "constant",
-          "storage.modifier",
-          "storage.type.class.js",
+          "punctuation.definition.comment",
+          "variable.language", // this, self, super, arguments
+          "storage.modifier", // async, static, abstract, readonly
+          "keyword.control.import",
+          "keyword.control.export",
+          "keyword.control.from",
+          "keyword.control.as",
+          "keyword.control.default",
+          "entity.other.attribute-name", // HTML/JSX attributes, CSS pseudo
+          "meta.function.decorator.python",
+          "entity.name.function.decorator.python",
+          "markup.quote.markdown",
+          "markup.italic",
         ],
-        "settings": {
-          "fontStyle": "italic",
-        },
+        "settings": { "fontStyle": "italic" },
       },
+
+      // 3 — bold: structure and definitions
       {
         "scope": [
-          "invalid",
-          "keyword.operator",
-          "constant.numeric.css",
-          "keyword.other.unit.px.css",
-          "constant.numeric.decimal.js",
-          "constant.numeric.json",
+          "entity.name.function.shell", // shell function definitions
+          "entity.name.tag.css", // CSS selectors override the
+          "entity.other.attribute-name.class.css", // attribute-name italic above
+          "entity.other.attribute-name.id.css",
+          "markup.heading",
+          "entity.name.section.markdown",
+          "punctuation.definition.heading.markdown",
+          "markup.bold",
         ],
-        "settings": {
-          "fontStyle": "",
-        },
+        "settings": { "fontStyle": "bold" },
+      },
+      {
+        "scope": ["markup.strikethrough"],
+        "settings": { "fontStyle": "strikethrough" },
       },
     ],
   },
+
   "playwright.reuseBrowser": true,
   "playwright.showTrace": false,
   "accessibility.signals.terminalBell": {
@@ -165,8 +249,12 @@
   "terminal.integrated.enableMultiLinePasteWarning": "never",
   "workbench.colorTheme": "Night Owl",
   "claudeCode.preferredLocation": "sidebar",
-  "gitlens.ai.model": "vscode",
-  "gitlens.ai.vscode.model": "copilot:gpt-4.1",
+
+  // No Copilot: hide VS Code's built-in chat/AI UI (Claude Code handles AI)
+  "chat.disableAIFeatures": true,
+  "chat.commandCenter.enabled": false,
+  "workbench.settings.showAISearchToggle": false,
+  "gitlens.ai.enabled": false,
   "explorer.confirmPasteNative": false,
   "security.workspace.trust.untrustedFiles": "open",
 }
