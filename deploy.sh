@@ -41,6 +41,8 @@ chmod +x "$HOME/.local/bin/dev-project"
 echo "  -> ~/.local/bin/dev-project"
 "$HOME/.local/bin/dev-project" scan --quiet
 echo "  -> project-hub scan"
+rm -f "$HOME/.config/dev/project-shortcuts.zsh" "$HOME/.config/dev/project-shortcuts.fish"
+echo "  -> removed legacy project shortcut files"
 cp "$DOTFILES/project-hub/scripts/project-hub-watch" "$HOME/.local/bin/project-hub-watch"
 chmod +x "$HOME/.local/bin/project-hub-watch"
 echo "  -> ~/.local/bin/project-hub-watch"

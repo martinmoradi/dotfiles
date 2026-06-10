@@ -14,10 +14,18 @@ function gmain --description 'Switch to main and pull'
     git checkout main; and git pull
 end
 
-# Projects
-function jukkai --description 'Go to the Jukkai app project'
-    cd ~/src/pro/jukkai
+function p --description 'Set or jump to the current Project Hub project'
+    if test (count $argv) -eq 0
+        set -l current_project_path (dev-project current)
+        or return
+        cd -- $current_project_path
+        return
+    end
+
+    dev-project set $argv[1]
 end
+
+complete -c p -fa "(dev-project ids 2>/dev/null)"
 
 # Apps
 alias txt='gnome-text-editor'

@@ -318,6 +318,18 @@ def print_list(projects):
         print(f'{marker} {project["id"]}\t{project["label"]}\t{project["path"]}')
 
 
+def print_ids(projects):
+    for project in projects:
+        print(project["id"])
+
+
+def print_path(projects, token=None):
+    if token:
+        print(resolve_project(projects, token)["path"])
+    else:
+        print(current_path(projects))
+
+
 def print_state(projects):
     current = current_state(projects)
     output_projects = []
@@ -756,6 +768,9 @@ def build_parser():
     scan_parser.add_argument("--quiet", action="store_true")
 
     subparsers.add_parser("current")
+    path_parser = subparsers.add_parser("path")
+    path_parser.add_argument("project", nargs="?")
+    subparsers.add_parser("ids")
     subparsers.add_parser("list")
     subparsers.add_parser("label")
     subparsers.add_parser("state")
@@ -790,6 +805,10 @@ def main():
         scan_projects(projects, quiet=args.quiet)
     elif args.command == "current":
         print(current_path(projects))
+    elif args.command == "path":
+        print_path(projects, args.project)
+    elif args.command == "ids":
+        print_ids(projects)
     elif args.command == "list":
         print_list(projects)
     elif args.command == "label":

@@ -91,9 +91,22 @@ gmain() {
     git checkout main && git pull
 }
 
-jukkai() {
-    cd ~/src/pro/jukkai
+p() {
+    if [[ $# -eq 0 ]]; then
+        local current_project_path
+        current_project_path="$(dev-project current)" || return
+        cd -- "$current_project_path"
+        return
+    fi
+
+    dev-project set "$1"
 }
+
+_p_completion() {
+    compadd -- ${(f)"$(dev-project ids 2>/dev/null)"}
+}
+
+compdef _p_completion p 2>/dev/null || true
 
 # Claude Code wrapped with a systemd sleep inhibitor so the machine won't
 # suspend during a long-running Claude task (mirrors fish/functions/claude.fish).
