@@ -237,7 +237,13 @@ ZSH_PLUGINS="$HOME/.local/share/zsh/plugins"
 # FZF (fuzzy find: Ctrl+R history, Ctrl+T files, Alt+C cd)
 # ---------------------------------------------------------------------------
 if command -v fzf &>/dev/null; then
-    source <(fzf --zsh)
+    # Ubuntu apt ships fzf with example scripts; newer fzf (>=0.48) uses --zsh.
+    if [[ -d /usr/share/doc/fzf/examples ]]; then
+        source /usr/share/doc/fzf/examples/key-bindings.zsh 2>/dev/null
+        source /usr/share/doc/fzf/examples/completion.zsh   2>/dev/null
+    else
+        source <(fzf --zsh)
+    fi
     export FZF_DEFAULT_OPTS='--height=40% --layout=reverse --border --info=inline'
     export FZF_CTRL_R_OPTS='--sort --exact'
 fi
