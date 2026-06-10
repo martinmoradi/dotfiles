@@ -1,16 +1,18 @@
 # Custom kitty tab bar — browser-like tabs with a per-app icon.
 #
 # Each tab shows:  <index> <app-icon> <directory>
-# The icon is chosen from the tab's *foreground process* (so it's consistent,
-# unlike the icon each program decides to print into its own title). Everything
-# is wrapped in try/except and falls back to the tab title, so a bad API call or
+# rendered with kitty's slanted powerline shape (tab_powerline_style in
+# custom.conf). The index matches the F1..F5 goto_tab bindings. The icon is
+# chosen from the tab's *foreground process* (so it's consistent, unlike the
+# icon each program decides to print into its own title). Everything is
+# wrapped in try/except and falls back to the tab title, so a bad API call or
 # missing glyph can never break the tab bar.
 #
-# Glyphs are Nerd Font (JetBrainsMono Nerd Font). Swap any codepoint below to
-# taste — the comment names the icon.
+# Glyphs are Nerd Font (built into MonoLisa Nerd Font Mono). Swap any
+# codepoint below to taste — the comment names the icon.
 import os
 
-from kitty.tab_bar import draw_tab_with_separator
+from kitty.tab_bar import draw_tab_with_powerline
 
 try:
     from kitty.boss import get_boss
@@ -24,7 +26,10 @@ DEFAULT_ICON = ""  #  folder (idle shell / unknown)
 # foreground process AND anywhere in its full command line.
 ICONS = (
     (("claude",),                                              ""),  #  claude (asterisk — closest glyph to the Claude mark)
+    (("codex",),                                               "󰚩"),  # robot (codex)
     (("nvim", "vim"),                                          ""),  #  vim
+    (("micro", "nano"),                                        ""),  # pencil/edit
+    (("htop", "btop"),                                         ""),  # graph (monitor)
     (("node", "npm", "pnpm", "yarn", "bun", "vite", "next",
       "tsc", "deno", "eslint"),                                ""),  #  node / JS
     (("git", "lazygit"),                                       ""),  #  git
@@ -72,7 +77,7 @@ def _detect(tab):
 
 def draw_tab(draw_data, screen, tab, before, max_tab_length, index, is_last, extra_data):
     icon, label = _detect(tab)
-    tab = tab._replace(title=f" {icon}  {label} ")
-    return draw_tab_with_separator(
+    tab = tab._replace(title=f"{index} {icon} {label}")
+    return draw_tab_with_powerline(
         draw_data, screen, tab, before, max_tab_length, index, is_last, extra_data
     )
