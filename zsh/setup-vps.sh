@@ -81,23 +81,35 @@ for PLUGIN in zsh-autosuggestions zsh-syntax-highlighting zsh-history-substring-
 done
 
 # ---------------------------------------------------------------------------
-head "oh-my-posh config  (zen theme)"
+head "oh-my-posh config  (Night Owl theme)"
 # ---------------------------------------------------------------------------
 mkdir -p "$HOME/.config/ohmyposh"
 cat > "$HOME/.config/ohmyposh/zen.toml" << 'TOML'
+# Night Owl palette — same zen layout as local machine, Night Owl colors.
+# Ref: https://github.com/sdras/night-owl-vscode-theme
 console_title_template = '{{ .Shell }} in {{ .Folder }}'
 version = 3
 final_space = true
 
+[palette]
+  blue   = '#82aaff'   # functions / keywords
+  teal   = '#7fdbca'   # variables / types
+  green  = '#addb67'   # strings
+  yellow = '#ffcb8b'   # constants / numbers
+  orange = '#f78c6c'   # attributes / dirty indicator
+  purple = '#c792ea'   # keywords / special
+  red    = '#ff6363'   # errors
+  grey   = '#637777'   # comments
+
 [secondary_prompt]
   template = '❯❯ '
-  foreground = 'magenta'
+  foreground = 'p:purple'
   background = 'transparent'
 
 [transient_prompt]
   template = '❯ '
   background = 'transparent'
-  foreground_templates = ['{{if gt .Code 0}}red{{end}}', '{{if eq .Code 0}}magenta{{end}}']
+  foreground_templates = ['{{if gt .Code 0}}p:red{{end}}', '{{if eq .Code 0}}p:purple{{end}}']
 
 [[blocks]]
   type = 'prompt'
@@ -106,7 +118,7 @@ final_space = true
 
   [[blocks.segments]]
     template = '{{ .Path }}'
-    foreground = 'blue'
+    foreground = 'p:blue'
     background = 'transparent'
     type = 'path'
     style = 'plain'
@@ -116,8 +128,8 @@ final_space = true
       style = 'full'
 
   [[blocks.segments]]
-    template = ' {{ .HEAD }}{{ if or (.Working.Changed) (.Staging.Changed) }}*{{ end }} <cyan>{{ if gt .Behind 0 }}⇣{{ end }}{{ if gt .Ahead 0 }}⇡{{ end }}</>'
-    foreground = 'p:grey'
+    template = ' {{ .HEAD }}{{ if or (.Working.Changed) (.Staging.Changed) }}<p:orange>*</>{{ end }} {{ if gt .Behind 0 }}<p:yellow>⇣</>{{ end }}{{ if gt .Ahead 0 }}<p:green>⇡</>{{ end }}'
+    foreground = 'p:teal'
     background = 'transparent'
     type = 'git'
     style = 'plain'
@@ -134,7 +146,7 @@ final_space = true
 
   [[blocks.segments]]
     template = '{{ .FormattedMs }}'
-    foreground = 'yellow'
+    foreground = 'p:yellow'
     background = 'transparent'
     type = 'executiontime'
     style = 'plain'
@@ -153,7 +165,7 @@ final_space = true
     background = 'transparent'
     type = 'text'
     style = 'plain'
-    foreground_templates = ['{{if gt .Code 0}}red{{end}}', '{{if eq .Code 0}}magenta{{end}}']
+    foreground_templates = ['{{if gt .Code 0}}p:red{{end}}', '{{if eq .Code 0}}p:purple{{end}}']
 
     [blocks.segments.properties]
       cache_duration = 'none'
