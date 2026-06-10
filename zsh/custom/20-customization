@@ -7,25 +7,20 @@ DISABLE_AUTO_UPDATE="true"    # We update OMZ via pacman (oh-my-zsh-git)
 COMPLETION_WAITING_DOTS="true"
 
 plugins=(
-    git                     # Git aliases, prompt info, completions
     sudo                    # Esc+Esc to prepend/strip sudo
-    archlinux               # paru/yay/pacman aliases
     colored-man-pages       # Colorize man pages
     extract                 # `x file.tar.gz` - universal archive extractor
     fancy-ctrl-z            # Ctrl+Z to toggle foreground/background
     safe-paste              # Multiline paste safety: newlines don't auto-execute
     fzf                     # Ctrl+R fuzzy history, Ctrl+T file, Alt+C cd
     history-substring-search # Up/down arrow searches history by typed prefix
-    systemd                 # Systemd convenience functions
     kitty                   # Kitty terminal completions
     bun                     # Bun completions
-    uv                      # UV python manager completions
     copybuffer              # Ctrl+O copies current cmdline to clipboard
     copyfile                # `copyfile <file>` copies file content
     copypath                # `copypath` copies current path
     dirhistory              # Alt+Left/Right/Up for directory nav history
     zoxide                  # Smart cd - `z <partial-name>` jumps to frecent dirs
-    podman                  # Podman completions
 )
 
 source "$ZSH/oh-my-zsh.sh"

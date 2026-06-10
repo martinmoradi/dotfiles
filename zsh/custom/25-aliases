@@ -1,0 +1,39 @@
+# Martin's curated alias set.
+# Overrides ML4W's broad stock alias file.
+
+# Trim aliases inherited from Oh My Zsh's default libs/plugins.
+unalias -m '[0-9]' '...*' 2>/dev/null
+unalias -- - 2>/dev/null
+unalias _ egrep fgrep grep history kitty-theme kssh kssh-slow l la lsa md rd \
+    run-help which-command x 2>/dev/null
+
+alias -- -='cd -'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+alias h='cd ~'
+alias c='clear'
+
+alias ls='eza -a --icons=always'
+alias ll='eza -al --icons=always'
+alias lt='eza -a --tree --level=1 --icons=always'
+
+alias ff='fastfetch'
+alias txt='micro'
+alias text='micro'
+alias claudex='claude --dangerously-skip-permissions'
+
+alias docs='open_folder "$HOME/Documents"'
+alias dl='open_folder "$HOME/Downloads"'
+alias pics='open_folder "$HOME/Pictures"'
+
+alias gstatus='git status --short --branch'
+alias gdiff='git diff'
+alias gadd='git add'
+alias gcommit='git commit'
+alias gpull='git pull'
+alias gpush='git push'
+alias glog='git log --oneline --decorate --graph'
+alias gswitch='git switch'
+alias gstash='git stash'
+alias gpop='git stash pop'

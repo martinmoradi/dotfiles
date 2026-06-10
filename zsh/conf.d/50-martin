@@ -79,11 +79,6 @@ if command -v atuin &>/dev/null; then
     eval "$(atuin init zsh --disable-up-arrow)"
 fi
 
-# --- Aliases ---
-alias txt='gnome-text-editor'
-alias text='gnome-text-editor'
-alias claudex='claude --dangerously-skip-permissions'
-
 # --- Functions ---
 
 gmain() {
@@ -99,6 +94,22 @@ p() {
     fi
 
     dev-project set "$1"
+}
+
+detach() {
+    "$@" >/dev/null 2>&1 & disown
+}
+
+open_folder() {
+    local target="${1:-$HOME}"
+
+    if command -v nautilus >/dev/null 2>&1; then
+        detach nautilus --new-window "$target"
+    elif command -v dolphin >/dev/null 2>&1; then
+        detach dolphin "$target"
+    else
+        detach xdg-open "$target"
+    fi
 }
 
 _p_completion() {
