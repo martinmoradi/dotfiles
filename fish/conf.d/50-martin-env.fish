@@ -11,6 +11,7 @@
 set --export BUN_INSTALL "$HOME/.bun"
 fish_add_path $BUN_INSTALL/bin
 
-# Preferred editor
-# set -gx EDITOR nvim
-# set -gx VISUAL $EDITOR
+# Preferred editor (overrides ml4w's 00_init.fish EDITOR=nvim)
+set -gx EDITOR micro
+set -gx VISUAL micro
+set -gx SUDO_EDITOR micro

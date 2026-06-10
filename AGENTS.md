@@ -25,6 +25,19 @@ bash -n deploy.sh project-hub/containers/scripts/control.sh project-hub/containe
 dev-project hub-state | python3 -m json.tool >/dev/null
 ```
 
+## Shell
+
+- Login shell is **zsh** (migrated from fish; fish configs kept for parity).
+  Stock `~/.zshrc` (ML4W loader, do not edit) sources `~/.config/zshrc/*` in
+  order; `~/.config/zshrc/custom/<name>` overrides the same-named stock file.
+- Personal zsh config: `zsh/conf.d/50-martin` (env, history, keybindings,
+  `EDITOR=micro`, the claude/codex sleep-inhibitor wrappers) and
+  `zsh/custom/20-customization` (oh-my-zsh from `/usr/share/oh-my-zsh` via the
+  `oh-my-zsh-git` pacman package, plus the plugin list). The large alias set
+  comes from OMZ plugins (`git` plugin alone is ~200), not hand-written.
+- fish equivalents live in `fish/conf.d/50-martin-*.fish`; keep both in sync
+  when changing shell env/editor.
+
 ## Structure
 
 - `project-hub/` owns Project Hub UI, registry, Waybar modules, watcher scripts,

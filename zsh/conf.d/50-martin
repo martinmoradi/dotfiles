@@ -7,6 +7,11 @@ export BUN_INSTALL="$HOME/.bun"
 path=("$BUN_INSTALL/bin" /usr/lib/ccache/bin/ $path)
 export PATH
 
+# --- Preferred editor (overrides ML4W's 00-init EDITOR=nvim) ---
+export EDITOR=micro
+export VISUAL=micro
+export SUDO_EDITOR=micro
+
 # --- History (upgrade from ML4W defaults) ---
 HISTSIZE=100000
 SAVEHIST=100000
