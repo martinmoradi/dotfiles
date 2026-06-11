@@ -18,6 +18,17 @@ cp "$DOTFILES/hypr/reload-desktop.sh" "$HOME/.local/bin/reload-desktop.sh"
 chmod +x "$HOME/.local/bin/reload-desktop.sh"
 echo "  -> ~/.local/bin/reload-desktop.sh"
 
+# Coolify staging deploy notifications (systemd user timer -> notify-send)
+cp "$DOTFILES/scripts/coolify-staging-notify.sh" "$HOME/.local/bin/coolify-staging-notify.sh"
+chmod +x "$HOME/.local/bin/coolify-staging-notify.sh"
+mkdir -p "$HOME/.config/systemd/user"
+cp "$DOTFILES/systemd/coolify-staging-notify.service" \
+   "$DOTFILES/systemd/coolify-staging-notify.timer" \
+   "$HOME/.config/systemd/user/"
+systemctl --user daemon-reload
+systemctl --user enable --now coolify-staging-notify.timer >/dev/null 2>&1 || true
+echo "  -> coolify-staging-notify (script + user timer enabled)"
+
 # Project Hub: current-project workflow and infra controls.
 mkdir -p "$HOME/.config/dev" "$HOME/.local/bin"
 cp "$DOTFILES/project-hub/projects.json" "$HOME/.config/dev/projects.json"

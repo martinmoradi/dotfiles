@@ -1,0 +1,6 @@
+[Unit]
+Description=Desktop notification for fresh jukkai staging deployments
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/coolify-staging-notify.sh
