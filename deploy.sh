@@ -169,6 +169,20 @@ if [ -f "$WAYBAR_MODULES" ]; then
     echo "  -> waybar/themes/*/config (Project Hub island inserted where modules.json is included)"
 fi
 
+# Claude Code: settings, hooks, statusline, global CLAUDE.md, skills
+mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/skills/execution-plan"
+cp "$DOTFILES/claude/settings.json"       "$HOME/.claude/settings.json"
+cp "$DOTFILES/claude/settings.local.json" "$HOME/.claude/settings.local.json"
+cp "$DOTFILES/claude/CLAUDE.md"           "$HOME/.claude/CLAUDE.md"
+cp "$DOTFILES/claude/statusline.sh"       "$HOME/.claude/statusline.sh"
+chmod +x "$HOME/.claude/statusline.sh"
+cp "$DOTFILES/claude/hooks/bash-guard.py"  "$HOME/.claude/hooks/bash-guard.py"
+cp "$DOTFILES/claude/hooks/auto-format.sh" "$HOME/.claude/hooks/auto-format.sh"
+chmod +x "$HOME/.claude/hooks/bash-guard.py" "$HOME/.claude/hooks/auto-format.sh"
+cp "$DOTFILES/claude/skills/execution-plan/SKILL.md" \
+   "$HOME/.claude/skills/execution-plan/SKILL.md"
+echo "  -> claude/ (settings, hooks, statusline, CLAUDE.md, skills)"
+
 echo ""
 echo "Done. To apply changes:"
 echo "  - Desktop shell: Super+Shift+R to reload Hyprland + Waybar"

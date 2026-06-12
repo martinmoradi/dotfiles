@@ -31,5 +31,16 @@ if [ -f ~/.config/hypr/monitors.conf ]; then
     echo "  -> hypr/monitors.conf"
 fi
 
+# Claude Code: settings, hooks, statusline, global CLAUDE.md, skills
+mkdir -p claude/hooks claude/skills/execution-plan
+cp ~/.claude/settings.json       claude/settings.json
+cp ~/.claude/settings.local.json claude/settings.local.json
+cp ~/.claude/CLAUDE.md           claude/CLAUDE.md
+cp ~/.claude/statusline.sh       claude/statusline.sh
+cp ~/.claude/hooks/bash-guard.py  claude/hooks/bash-guard.py
+cp ~/.claude/hooks/auto-format.sh claude/hooks/auto-format.sh
+cp ~/.claude/skills/execution-plan/SKILL.md claude/skills/execution-plan/SKILL.md
+echo "  -> claude/ (settings, hooks, statusline, CLAUDE.md, skills)"
+
 echo ""
 echo "Done. Review with 'git -C $DOTFILES diff' and commit."
