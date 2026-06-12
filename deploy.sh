@@ -62,11 +62,14 @@ echo "  -> ~/.local/bin/project-hub-watch"
 chmod +x "$DOTFILES/scripts/dotfiles-sync.sh" \
     "$DOTFILES/scripts/dotfiles-pacman-hook.sh" \
     "$DOTFILES/scripts/install-pacman-sync-hook.sh" \
+    "$DOTFILES/scripts/disable-hyprland-split-workspaces.sh" \
     "$DOTFILES/scripts/patch-waybar-project-hub.py"
 ln -sf "$DOTFILES/scripts/dotfiles-sync.sh" "$HOME/.local/bin/dotfiles-sync"
 echo "  -> ~/.local/bin/dotfiles-sync"
 ln -sf "$DOTFILES/scripts/dotfiles-pacman-hook.sh" "$HOME/.local/bin/dotfiles-pacman-hook"
 echo "  -> ~/.local/bin/dotfiles-pacman-hook"
+ln -sf "$DOTFILES/scripts/disable-hyprland-split-workspaces.sh" "$HOME/.local/bin/disable-hyprland-split-workspaces"
+echo "  -> ~/.local/bin/disable-hyprland-split-workspaces"
 if [ -f "$DOTFILES/pacman/99-dotfiles-sync.hook.in" ]; then
     if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
         "$DOTFILES/scripts/install-pacman-sync-hook.sh"
