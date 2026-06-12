@@ -75,7 +75,8 @@ def load_projects():
             continue
         if not item.get("id") or not item.get("path"):
             continue
-        projects.append(
+        project = dict(item)
+        project.update(
             {
                 "id": str(item["id"]),
                 "label": str(item.get("label") or item["id"]),
@@ -83,6 +84,7 @@ def load_projects():
                 "kind": str(item.get("kind") or "project"),
             }
         )
+        projects.append(project)
     return projects
 
 
