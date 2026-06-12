@@ -132,6 +132,14 @@ exit "$rc"
     )
 
 
+def service_up_command(service):
+    command = ["podman", "compose"]
+    for profile in service.get("profiles", []):
+        command.extend(["--profile", profile])
+    command.extend(["up", "-d", service["name"]])
+    return command
+
+
 def main():
     if not ARGS:
         raise SystemExit("Usage: control.sh up|stop|toggle|service-up|service-stop|desktop <project> [service]")
@@ -164,7 +172,7 @@ def main():
             notify(f"{service['name']} is marked {service.get('protect_reason') or 'protected'} and is left to Podman Desktop.")
             return
         if action == "service-up":
-            spawn(project, ["podman", "compose", "up", "-d", service["name"]])
+            spawn(project, service_up_command(service))
         else:
             spawn(project, ["podman", "compose", "stop", service["name"]])
     else:

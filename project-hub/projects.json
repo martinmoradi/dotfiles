@@ -3,7 +3,8 @@
     "id": "jukkai",
     "label": "Jukkai",
     "path": "/home/martin/src/pro/jukkai",
-    "kind": "client"
+    "kind": "client",
+    "controllable_services": ["wordmark-svc"]
   },
   {
     "id": "portfolio",

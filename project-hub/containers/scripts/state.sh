@@ -91,7 +91,13 @@ def load_project_registry():
         project_id = project.get("id")
         path = project.get("path")
         if project_id and path:
-            registry[str(project_id)] = str(Path(str(path)).expanduser())
+            controllable_services = project.get("controllable_services") or []
+            if isinstance(controllable_services, str):
+                controllable_services = [controllable_services]
+            registry[str(project_id)] = {
+                "path": str(Path(str(path)).expanduser()),
+                "controllable_services": [str(service) for service in controllable_services],
+            }
     return registry
 
 
@@ -245,17 +251,21 @@ except Exception:
 
 result_projects = []
 for name, bucket in projects.items():
-    working_dir = registry_paths.get(name) or bucket["working_dir"]
+    registry = registry_paths.get(name, {})
+    working_dir = registry.get("path") or bucket["working_dir"]
+    controllable_services = set(registry.get("controllable_services", []))
     metadata = load_compose_metadata(bucket["labels"], working_dir)
     services = []
 
     for container in bucket["containers"]:
         labels = container.get("Labels") or {}
         service_name = labels.get("com.docker.compose.service", container_name(container))
+        if metadata and service_name not in metadata:
+            continue
         meta = metadata.get(service_name, {})
         profiles = meta.get("profiles", [])
         has_build = bool(meta.get("has_build", False))
-        protected = bool(profiles or has_build)
+        protected = bool((profiles or has_build) and service_name not in controllable_services)
         reasons = []
         if profiles:
             reasons.append("profile")
@@ -276,7 +286,7 @@ for name, bucket in projects.items():
                 "profiles": profiles,
                 "has_build": has_build,
                 "protected": protected,
-                "protect_reason": "/".join(reasons),
+                "protect_reason": "/".join(reasons) if protected else "",
             }
         )
 
