@@ -199,10 +199,6 @@ def build_registry() -> List[Module]:
              dry_note="patch-waybar-project-hub.py (in-place; .bak on first run)",
              run_argv=waybar_patch_argv,
              guard=Guard(target_exists=CFG / "waybar/modules.json")),
-        # Keep the escape hatch on PATH so it works from a broken-desktop TTY.
-        Step(Kind.SYMLINK, "disable-hyprland-split-workspaces (PATH escape hatch)",
-             REPO / "scripts/disable-hyprland-split-workspaces.sh",
-             LB / "disable-hyprland-split-workspaces", executable=True),
         # Interactive flip (TUI only). deploy never disables; this is the reactive
         # escape hatch when a Hyprland update outpaces the split plugin.
         Step(Kind.TOGGLE, "workspace mode", interactive_only=True,
@@ -250,6 +246,7 @@ def build_registry() -> List[Module]:
     sync_hooks = Module("sync-hooks", "Sync helpers, self-install, pacman hook", [
         Step(Kind.SYMLINK, "dotfiles-sync", REPO / "scripts/dotfiles-sync.sh", LB / "dotfiles-sync", executable=True),
         Step(Kind.SYMLINK, "dotfiles-pacman-hook", REPO / "scripts/dotfiles-pacman-hook.sh", LB / "dotfiles-pacman-hook", executable=True),
+        Step(Kind.SYMLINK, "disable-hyprland-split-workspaces (CLI on PATH)", REPO / "scripts/disable-hyprland-split-workspaces.sh", LB / "disable-hyprland-split-workspaces", executable=True),
         Step(Kind.SYMLINK, "dot (self-install)", REPO / "dot", LB / "dot", executable=True),
         Step(Kind.ACTION, "install pacman hook (passwordless sudo only)",
              dry_note="install-pacman-sync-hook.sh (needs sudo -n)",
@@ -766,17 +763,23 @@ class App:
                 break
             label, status, step = rows[ri]
             is_toggle = step is not None and step.kind is Kind.TOGGLE
-            box = " → " if is_toggle else ("[x]" if self.is_checked(ri) else "[ ]")
-            mark = self.MARK.get(status.state, "?")
-            line = f" {box} {mark} {label}"
             row_attr = curses.A_REVERSE if ri == self.cursor else 0
-            self.addnstr(3 + vi, 0, line.ljust(w - 1), row_attr)
-            # colourise the marker + state when not on the cursor row
-            if not row_attr:
-                self.addnstr(3 + vi, 5, mark, self.attr(status.state))
-            tail = state_label_plain(status)
-            self.addnstr(3 + vi, max(0, w - len(tail) - 2), tail,
-                         row_attr or self.attr(status.state))
+            if is_toggle:
+                # An action button, not a checkbox: arrow + the flip, with the
+                # current live mode spelled out so it can't read as drift state.
+                self.addnstr(3 + vi, 0, f" →  {label}".ljust(w - 1), row_attr)
+                tail = f"now: {status.detail}"
+                self.addnstr(3 + vi, max(0, w - len(tail) - 2), tail,
+                             row_attr or self.attr(ACTION_ONLY))
+            else:
+                box = "[x]" if self.is_checked(ri) else "[ ]"
+                mark = self.MARK.get(status.state, "?")
+                self.addnstr(3 + vi, 0, f" {box} {mark} {label}".ljust(w - 1), row_attr)
+                if not row_attr:
+                    self.addnstr(3 + vi, 5, mark, self.attr(status.state))
+                tail = state_label_plain(status)
+                self.addnstr(3 + vi, max(0, w - len(tail) - 2), tail,
+                             row_attr or self.attr(status.state))
 
         cur = rows[self.cursor] if self.cursor < len(rows) else None
         on_toggle = cur is not None and cur[2] is not None and cur[2].kind is Kind.TOGGLE
