@@ -43,6 +43,7 @@ class Kind(Enum):
     GEN_IF_MISSING = "gen"      # write generated content only if target empty/missing
     LEGACY_RM = "legacy_rm"     # remove a stale file (drift = still present)
     ACTION = "action"           # opaque post-action; can only run, never diffed
+    TOGGLE = "toggle"           # interactive live-state switch (TUI only; deploy skips)
 
 
 # status states
@@ -76,6 +77,9 @@ class Step:
     skip_hint: str = ""                    # printed when a guard skips the step
     generator: Optional[Callable[[], str]] = None  # GEN_IF_MISSING content
     exec_glob: Optional[str] = None        # DIR_SYNC: chmod +x matches after sync
+    interactive_only: bool = False         # shown/runnable in TUI, skipped by deploy
+    detect: Optional[Callable[[], str]] = None     # TOGGLE: returns current mode key
+    transitions: Optional[dict] = None     # TOGGLE: mode -> {desc, action, argv}
 
 
 @dataclass
@@ -108,6 +112,20 @@ def enable_coolify_timer() -> None:
         ["systemctl", "--user", "enable", "--now", "coolify-staging-notify.timer"],
         check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
+
+
+def detect_waybar_mode() -> str:
+    """split = my config (split-monitor-workspaces); vanilla = plugin disabled."""
+    try:
+        data = json.loads((CFG / "waybar/modules.json").read_text())
+    except (OSError, ValueError):
+        return "unknown"
+    on_scroll = data.get("hyprland/workspaces", {}).get("on-scroll-up", "")
+    if "split-cycleworkspaces" in on_scroll:
+        return "split"
+    if "workspace" in on_scroll:
+        return "vanilla"
+    return "unknown"
 
 
 # --- registry ---------------------------------------------------------------
@@ -166,18 +184,41 @@ def build_registry() -> List[Module]:
         Step(Kind.DIR_SYNC, "quickshell-projects", REPO / "project-hub/quickshell", CFG / "quickshell-projects"),
     ])
 
-    waybar = Module("waybar", "ML4W Waybar patch (in-place)", [
-        Step(Kind.ACTION, "patch modules.json + themes",
+    waybar_patch_argv = [
+        "python3", str(REPO / "scripts/patch-waybar-project-hub.py"),
+        str(CFG / "waybar/modules.json"),
+        str(REPO / "waybar/modules-workspace-override.jsonc"),
+        str(REPO / "project-hub/waybar/module.jsonc"),
+        str(CFG / "waybar/themes"),
+        str(CFG / "waybar"),
+    ]
+    waybar_disable_argv = [str(REPO / "scripts/disable-hyprland-split-workspaces.sh")]
+    waybar = Module("waybar", "Workspace mode (split plugin / vanilla) + Project Hub island", [
+        # The deploy action: always (re)apply my config. deploy = converge to repo.
+        Step(Kind.ACTION, "apply my config (split + Project Hub island)",
              dry_note="patch-waybar-project-hub.py (in-place; .bak on first run)",
-             run_argv=[
-                 "python3", str(REPO / "scripts/patch-waybar-project-hub.py"),
-                 str(CFG / "waybar/modules.json"),
-                 str(REPO / "waybar/modules-workspace-override.jsonc"),
-                 str(REPO / "project-hub/waybar/module.jsonc"),
-                 str(CFG / "waybar/themes"),
-                 str(CFG / "waybar"),
-             ],
+             run_argv=waybar_patch_argv,
              guard=Guard(target_exists=CFG / "waybar/modules.json")),
+        # Keep the escape hatch on PATH so it works from a broken-desktop TTY.
+        Step(Kind.SYMLINK, "disable-hyprland-split-workspaces (PATH escape hatch)",
+             REPO / "scripts/disable-hyprland-split-workspaces.sh",
+             LB / "disable-hyprland-split-workspaces", executable=True),
+        # Interactive flip (TUI only). deploy never disables; this is the reactive
+        # escape hatch when a Hyprland update outpaces the split plugin.
+        Step(Kind.TOGGLE, "workspace mode", interactive_only=True,
+             detect=detect_waybar_mode,
+             guard=Guard(target_exists=CFG / "waybar/modules.json"),
+             transitions={
+                 "split": {"desc": "split plugin (my config)",
+                           "action": "switch to vanilla (disable split plugin)",
+                           "argv": waybar_disable_argv},
+                 "vanilla": {"desc": "vanilla (plugin disabled)",
+                             "action": "switch to my config (split + island)",
+                             "argv": waybar_patch_argv},
+                 "unknown": {"desc": "unknown workspace config",
+                             "action": "apply my config (split + island)",
+                             "argv": waybar_patch_argv},
+             }),
     ])
 
     claude_files = [
@@ -209,7 +250,6 @@ def build_registry() -> List[Module]:
     sync_hooks = Module("sync-hooks", "Sync helpers, self-install, pacman hook", [
         Step(Kind.SYMLINK, "dotfiles-sync", REPO / "scripts/dotfiles-sync.sh", LB / "dotfiles-sync", executable=True),
         Step(Kind.SYMLINK, "dotfiles-pacman-hook", REPO / "scripts/dotfiles-pacman-hook.sh", LB / "dotfiles-pacman-hook", executable=True),
-        Step(Kind.SYMLINK, "disable-hyprland-split-workspaces", REPO / "scripts/disable-hyprland-split-workspaces.sh", LB / "disable-hyprland-split-workspaces", executable=True),
         Step(Kind.SYMLINK, "dot (self-install)", REPO / "dot", LB / "dot", executable=True),
         Step(Kind.ACTION, "install pacman hook (passwordless sudo only)",
              dry_note="install-pacman-sync-hook.sh (needs sudo -n)",
@@ -218,7 +258,9 @@ def build_registry() -> List[Module]:
              skip_hint=f"no passwordless sudo; run: {REPO / 'scripts/install-pacman-sync-hook.sh'}"),
     ])
 
-    return [hypr, kitty, zsh, vscode, sidepad, project_hub, waybar, claude, claude_mcp, coolify, sync_hooks]
+    # waybar first so its tab sits right after "all". Deploy order is unaffected
+    # in practice: the patch only edits JSON and never restarts waybar.
+    return [waybar, hypr, kitty, zsh, vscode, sidepad, project_hub, claude, claude_mcp, coolify, sync_hooks]
 
 
 # --- helpers ----------------------------------------------------------------
@@ -287,6 +329,9 @@ def step_status(step: Step) -> Status:
     k = step.kind
     if k is Kind.ACTION:
         return Status(ACTION_ONLY, "runs on deploy")
+    if k is Kind.TOGGLE:
+        mode = step.detect()
+        return Status(ACTION_ONLY, (step.transitions.get(mode) or {}).get("desc", mode))
     if k is Kind.MKDIR:
         return Status(IN_SYNC if step.dst.exists() else NEW)
 
@@ -332,6 +377,24 @@ def step_status(step: Step) -> Status:
         return Status(DRIFTED, "legacy, will remove") if step.dst.exists() else Status(IN_SYNC)
 
     return Status(SKIPPED, "unknown kind")
+
+
+def step_display(step: Step) -> str:
+    """Label to show. TOGGLE shows the action for the *current* live mode."""
+    if step.kind is Kind.TOGGLE:
+        mode = step.detect()
+        trans = step.transitions.get(mode) or step.transitions.get("unknown") or {}
+        return trans.get("action", step.label)
+    return step.label
+
+
+def module_mode(module: Module) -> str:
+    """Current TOGGLE mode description for a module, if it has one."""
+    for s in module.steps:
+        if s.kind is Kind.TOGGLE:
+            st = step_status(s)
+            return st.detail if st.state == ACTION_ONLY else ""
+    return ""
 
 
 def module_status(module: Module) -> Status:
@@ -488,13 +551,27 @@ def deploy(reg: List[Module], names=None, step_filter=None, dry_run=False) -> No
     for m in modules:
         print(paint(m.name, "1"))
         for idx, step in enumerate(m.steps):
+            if step.interactive_only:        # deploy converges to repo, never flips
+                continue
             if single and step_filter is not None and idx not in step_filter:
                 continue
             result = apply_step(step, dry_run)
-            print(f"   {step.label:<34} {result}")
+            print(f"   {step_display(step):<34} {result}")
         print()
     if not dry_run:
         print("Done. Reload hints: Super+Shift+R (shell), kill -SIGUSR1 $(pgrep kitty).")
+
+
+def run_toggle(step: Step) -> None:
+    """Run a TOGGLE's flip for the current live mode (TUI escape hatch)."""
+    mode = step.detect()
+    trans = step.transitions.get(mode) or step.transitions.get("unknown")
+    if not trans:
+        print("waybar: nothing to do")
+        return
+    print(f"waybar: {trans['action']}")
+    rc = subprocess.run(trans["argv"], check=False).returncode
+    print("done." if rc == 0 else f"failed (rc={rc})")
 
 
 def cmd_status(reg: List[Module], module=None, verbose=False) -> None:
@@ -504,13 +581,14 @@ def cmd_status(reg: List[Module], module=None, verbose=False) -> None:
     for m in modules:
         ms = module_status(m)
         counts[ms.state] = counts.get(ms.state, 0) + 1
-        detail = f"  ({ms.detail})" if ms.detail else ""
+        bits = [b for b in (ms.detail, f"mode: {module_mode(m)}" if module_mode(m) else "") if b]
+        detail = f"  ({'; '.join(bits)})" if bits else ""
         print(f"  {state_label(ms.state):<18} {m.name:<16}{detail}")
         if show_steps:
             for step in m.steps:
                 ss = step_status(step)
                 sd = f"  {ss.detail}" if ss.detail else ""
-                print(f"        {state_label(ss.state):<18} {step.label}{sd}")
+                print(f"        {state_label(ss.state):<18} {step_display(step)}{sd}")
     print()
     summary = ", ".join(f"{n} {state_label(s)}" for s, n in counts.items() if n)
     print(f"  {summary}")
@@ -532,6 +610,11 @@ def cmd_diff(reg: List[Module], module=None) -> None:
                 changed, missing, extra = tree_diff(step.src, step.dst)
                 if changed or missing or extra:
                     print(f"# {m.name} / {step.label}: {changed} changed, {missing} new, {extra} extra\n")
+            elif step.kind is Kind.TOGGLE:
+                mode = step.detect()
+                trans = step.transitions.get(mode) or {}
+                print(f"# {m.name} / workspace mode: {trans.get('desc', mode)} "
+                      f"-> flip would: {trans.get('action', '')}\n")
             elif step.kind is Kind.ACTION:
                 print(f"# {m.name} / {step.label}: {step.dry_note}\n")
 
@@ -580,7 +663,10 @@ class App:
         self.cursor = 0
         self.top = 0
         self.selected_modules = {m.name for m in reg}
-        self.selected_steps = {m.name: set(range(len(m.steps))) for m in reg}
+        self.selected_steps = {
+            m.name: {i for i, s in enumerate(m.steps) if not s.interactive_only}
+            for m in reg
+        }
         self.request = None
         self.refresh_status()
         self._init_colors()
@@ -614,9 +700,9 @@ class App:
 
     def rows(self):
         if self.is_all():
-            return [(m.name, self.mod_status[m.name], m.summary) for m in self.reg]
+            return [(m.name, self.mod_status[m.name], None) for m in self.reg]
         m = self.cur_module()
-        return [(s.label, self.step_status[m.name][i], "") for i, s in enumerate(m.steps)]
+        return [(step_display(s), self.step_status[m.name][i], s) for i, s in enumerate(m.steps)]
 
     def is_checked(self, i):
         if self.is_all():
@@ -625,21 +711,21 @@ class App:
 
     def toggle(self, i):
         if self.is_all():
-            name = self.reg[i].name
-            self.selected_modules ^= {name}
+            self.selected_modules ^= {self.reg[i].name}
         else:
-            steps = self.selected_steps[self.cur_module().name]
-            steps ^= {i}
+            m = self.cur_module()
+            if m.steps[i].interactive_only:   # toggles are buttons, not checkboxes
+                return
+            self.selected_steps[m.name] ^= {i}
 
     def toggle_all(self):
-        rows = self.rows()
         if self.is_all():
             allnames = {m.name for m in self.reg}
             self.selected_modules = set() if self.selected_modules == allnames else allnames
         else:
-            name = self.cur_module().name
-            full = set(range(len(rows)))
-            self.selected_steps[name] = set() if self.selected_steps[name] == full else full
+            m = self.cur_module()
+            full = {i for i, s in enumerate(m.steps) if not s.interactive_only}
+            self.selected_steps[m.name] = set() if self.selected_steps[m.name] == full else full
 
     def count_selected(self):
         if self.is_all():
@@ -678,8 +764,9 @@ class App:
             ri = self.top + vi
             if ri >= len(rows):
                 break
-            label, status, summary = rows[ri]
-            box = "[x]" if self.is_checked(ri) else "[ ]"
+            label, status, step = rows[ri]
+            is_toggle = step is not None and step.kind is Kind.TOGGLE
+            box = " → " if is_toggle else ("[x]" if self.is_checked(ri) else "[ ]")
             mark = self.MARK.get(status.state, "?")
             line = f" {box} {mark} {label}"
             row_attr = curses.A_REVERSE if ri == self.cursor else 0
@@ -691,9 +778,12 @@ class App:
             self.addnstr(3 + vi, max(0, w - len(tail) - 2), tail,
                          row_attr or self.attr(status.state))
 
+        cur = rows[self.cursor] if self.cursor < len(rows) else None
+        on_toggle = cur is not None and cur[2] is not None and cur[2].kind is Kind.TOGGLE
+        enter = "enter switch mode" if on_toggle else f"enter deploy ({self.count_selected()})"
         self.addnstr(h - 1, 0,
                      f" ↑↓ move  space toggle  ←→ context  a all/none  "
-                     f"enter deploy ({self.count_selected()})  r refresh  q quit",
+                     f"{enter}  r refresh  q quit",
                      curses.A_DIM)
         self.scr.refresh()
 
@@ -717,6 +807,11 @@ class App:
         elif k == ord("r"):
             self.refresh_status()
         elif k in (curses.KEY_ENTER, 10, 13):
+            if not self.is_all():
+                m = self.cur_module()
+                if self.cursor < len(m.steps) and m.steps[self.cursor].kind is Kind.TOGGLE:
+                    self.request = ("toggle", m.name, self.cursor)
+                    return False
             self._build_request()
             return False
         elif k in (ord("q"), 27):
@@ -727,10 +822,11 @@ class App:
         if self.is_all():
             names = [m.name for m in self.reg if m.name in self.selected_modules]
             if names:
-                self.request = (names, None)
+                self.request = ("deploy", names, None)
         else:
-            name = self.cur_module().name
-            self.request = ([name], set(self.selected_steps[name]))
+            m = self.cur_module()
+            sel = {i for i in self.selected_steps[m.name] if not m.steps[i].interactive_only}
+            self.request = ("deploy", [m.name], sel)
 
     def run(self):
         curses.curs_set(0)
@@ -756,10 +852,16 @@ def run_tui(reg: List[Module]) -> None:
         request = curses.wrapper(lambda scr: App(scr, reg).run())
     except curses.error as exc:
         raise SystemExit(f"dot: terminal too small or curses error: {exc}")
-    if request:
-        names, step_filter = request
-        print()
+    if not request:
+        return
+    print()
+    if request[0] == "deploy":
+        _, names, step_filter = request
         deploy(reg, names=names, step_filter=step_filter, dry_run=False)
+    elif request[0] == "toggle":
+        _, modname, idx = request
+        module = next(m for m in reg if m.name == modname)
+        run_toggle(module.steps[idx])
 
 
 # --- entrypoint -------------------------------------------------------------
