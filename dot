@@ -1,0 +1,814 @@
+#!/usr/bin/env python3
+"""dot - front door for this dotfiles repo.
+
+One engine, two front-ends:
+  * scriptable CLI: dot deploy [modules...] [--dry-run], status, diff, snapshot, sync
+  * interactive TUI: `dot` with no args (curses; tabs + checkboxes + drift markers)
+
+The module registry below is the structure that used to be hard-coded as a
+linear deploy.sh. Each module is an ordered list of typed steps; deploy.sh and
+snapshot.sh are now thin shims that exec this tool.
+"""
+
+import argparse
+import curses
+import difflib
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Callable, List, Optional
+
+# --- paths (module-level; independent of argv) ------------------------------
+
+REPO = Path(__file__).resolve().parent          # resolve() follows the ~/.local/bin/dot symlink
+HOME = Path.home()
+LB = HOME / ".local" / "bin"
+CFG = Path(os.environ.get("XDG_CONFIG_HOME") or (HOME / ".config"))
+CLAUDE = HOME / ".claude"
+
+
+# --- data model -------------------------------------------------------------
+
+class Kind(Enum):
+    COPY = "copy"               # file -> file (drift = hash/mode mismatch)
+    DIR_SYNC = "dir_sync"       # dir -> dir, mirror with delete (drift = tree diff)
+    SYMLINK = "symlink"         # ln -sf src -> dst
+    MKDIR = "mkdir"             # ensure an otherwise-empty dir exists
+    GEN_IF_MISSING = "gen"      # write generated content only if target empty/missing
+    LEGACY_RM = "legacy_rm"     # remove a stale file (drift = still present)
+    ACTION = "action"           # opaque post-action; can only run, never diffed
+
+
+# status states
+IN_SYNC = "in-sync"
+DRIFTED = "drifted"
+NEW = "not-deployed"
+SKIPPED = "skipped"
+ACTION_ONLY = "action"
+
+
+@dataclass
+class Guard:
+    target_exists: Optional[Path] = None   # deployed target must already exist
+    repo_exists: Optional[Path] = None     # repo-side source must exist
+    command: Optional[str] = None          # command -v <command>
+    sudo_n: bool = False                   # passwordless `sudo -n true`
+
+
+@dataclass
+class Step:
+    kind: Kind
+    label: str
+    src: Optional[Path] = None
+    dst: Optional[Path] = None
+    executable: bool = False               # chmod +x the deployed file/source
+    snapshot: bool = False                 # also pulled back by `dot snapshot`
+    guard: Guard = field(default_factory=Guard)
+    run_argv: Optional[List[str]] = None   # ACTION: subprocess to run
+    run: Optional[Callable[[], None]] = None  # ACTION: python callable
+    dry_note: str = ""                     # ACTION: what --dry-run prints
+    skip_hint: str = ""                    # printed when a guard skips the step
+    generator: Optional[Callable[[], str]] = None  # GEN_IF_MISSING content
+    exec_glob: Optional[str] = None        # DIR_SYNC: chmod +x matches after sync
+
+
+@dataclass
+class Module:
+    name: str
+    summary: str
+    steps: List[Step]
+
+
+@dataclass
+class Status:
+    state: str
+    detail: str = ""
+
+
+# --- ACTION callables -------------------------------------------------------
+
+def gen_current_project() -> str:
+    """First registered project path, for the initial current-project pointer."""
+    try:
+        data = json.loads((CFG / "dev" / "projects.json").read_text())
+    except (OSError, ValueError):
+        return ""
+    return f'{data[0]["path"]}\n' if data else ""
+
+
+def enable_coolify_timer() -> None:
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    subprocess.run(
+        ["systemctl", "--user", "enable", "--now", "coolify-staging-notify.timer"],
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+# --- registry ---------------------------------------------------------------
+
+def build_registry() -> List[Module]:
+    hypr = Module("hypr", "Hyprland config + helper scripts", [
+        Step(Kind.COPY, "custom.conf", REPO / "hypr/custom.conf", CFG / "hypr/conf/custom.conf"),
+        Step(Kind.COPY, "hyprpm-autoupdate.sh", REPO / "hypr/hyprpm-autoupdate.sh", LB / "hyprpm-autoupdate.sh", executable=True),
+        Step(Kind.COPY, "reload-desktop.sh", REPO / "hypr/reload-desktop.sh", LB / "reload-desktop.sh", executable=True),
+        Step(Kind.COPY, "screenshot-area-clipboard.sh", REPO / "hypr/screenshot-area-clipboard.sh", LB / "screenshot-area-clipboard.sh", executable=True),
+        Step(Kind.COPY, "screenshot-active-clipboard.sh", REPO / "hypr/screenshot-active-clipboard.sh", LB / "screenshot-active-clipboard.sh", executable=True),
+        Step(Kind.COPY, "monitors.conf", REPO / "hypr/monitors.conf", CFG / "hypr/monitors.conf",
+             snapshot=True, guard=Guard(repo_exists=REPO / "hypr/monitors.conf")),
+    ])
+
+    kitty = Module("kitty", "Kitty config + tab bar + smart paste", [
+        Step(Kind.COPY, "custom.conf", REPO / "kitty/custom.conf", CFG / "kitty/custom.conf"),
+        Step(Kind.COPY, "tab_bar.py", REPO / "kitty/tab_bar.py", CFG / "kitty/tab_bar.py"),
+        Step(Kind.COPY, "clip-smart-paste.sh", REPO / "kitty/clip-smart-paste.sh", LB / "clip-smart-paste.sh", executable=True),
+    ])
+
+    # zsh layers are globbed so new conf.d/custom files are picked up automatically.
+    zsh_steps = []
+    for f in sorted((REPO / "zsh/conf.d").glob("*")):
+        zsh_steps.append(Step(Kind.COPY, f"conf.d/{f.name}", f, CFG / "zshrc" / f.name))
+    for f in sorted((REPO / "zsh/custom").glob("*")):
+        zsh_steps.append(Step(Kind.COPY, f"custom/{f.name}", f, CFG / "zshrc/custom" / f.name))
+    zsh_steps += [
+        Step(Kind.LEGACY_RM, "legacy 50-martin-aliases.fish", dst=CFG / "fish/conf.d/50-martin-aliases.fish"),
+        Step(Kind.LEGACY_RM, "legacy 50-martin-env.fish", dst=CFG / "fish/conf.d/50-martin-env.fish"),
+    ]
+    zsh = Module("zsh", "Personal zsh layer (ML4W-compatible)", zsh_steps)
+
+    vscode = Module("vscode", "VS Code user settings", [
+        Step(Kind.COPY, "settings.json", REPO / "vscode/settings.json", CFG / "Code/User/settings.json",
+             snapshot=True, guard=Guard(target_exists=CFG / "Code/User")),
+    ])
+
+    sidepad = Module("sidepad", "Patched sidepad (multi-monitor)", [
+        Step(Kind.COPY, "sidepad", REPO / "sidepad/sidepad", CFG / "sidepad/sidepad", executable=True),
+    ])
+
+    project_hub = Module("project-hub", "Project Hub registry, CLI, infra backend", [
+        Step(Kind.COPY, "projects.json", REPO / "project-hub/projects.json", CFG / "dev/projects.json"),
+        Step(Kind.GEN_IF_MISSING, "current-project (first project)", dst=CFG / "dev/current-project",
+             generator=gen_current_project),
+        Step(Kind.COPY, "dev-project", REPO / "project-hub/scripts/dev-project", LB / "dev-project", executable=True),
+        Step(Kind.ACTION, "scan projects", dry_note="dev-project scan --quiet",
+             run_argv=[str(LB / "dev-project"), "scan", "--quiet"],
+             guard=Guard(target_exists=LB / "dev-project")),
+        Step(Kind.LEGACY_RM, "legacy project-shortcuts.zsh", dst=CFG / "dev/project-shortcuts.zsh"),
+        Step(Kind.LEGACY_RM, "legacy project-shortcuts.fish", dst=CFG / "dev/project-shortcuts.fish"),
+        Step(Kind.COPY, "project-hub-watch", REPO / "project-hub/scripts/project-hub-watch", LB / "project-hub-watch", executable=True),
+        Step(Kind.DIR_SYNC, "quickshell-containers", REPO / "project-hub/containers", CFG / "quickshell-containers",
+             exec_glob="scripts/*.sh"),
+        Step(Kind.DIR_SYNC, "quickshell-projects", REPO / "project-hub/quickshell", CFG / "quickshell-projects"),
+    ])
+
+    waybar = Module("waybar", "ML4W Waybar patch (in-place)", [
+        Step(Kind.ACTION, "patch modules.json + themes",
+             dry_note="patch-waybar-project-hub.py (in-place; .bak on first run)",
+             run_argv=[
+                 "python3", str(REPO / "scripts/patch-waybar-project-hub.py"),
+                 str(CFG / "waybar/modules.json"),
+                 str(REPO / "waybar/modules-workspace-override.jsonc"),
+                 str(REPO / "project-hub/waybar/module.jsonc"),
+                 str(CFG / "waybar/themes"),
+                 str(CFG / "waybar"),
+             ],
+             guard=Guard(target_exists=CFG / "waybar/modules.json")),
+    ])
+
+    claude_files = [
+        ("settings.json", False),
+        ("settings.local.json", False),
+        ("CLAUDE.md", False),
+        ("statusline.sh", True),
+        ("hooks/bash-guard.py", True),
+        ("hooks/auto-format.sh", True),
+        ("skills/execution-plan/SKILL.md", False),
+    ]
+    claude = Module("claude", "Claude Code settings, hooks, statusline, skills", [
+        Step(Kind.COPY, rel, REPO / "claude" / rel, CLAUDE / rel, executable=ex, snapshot=True)
+        for rel, ex in claude_files
+    ])
+
+    claude_mcp = Module("claude-mcp", "Claude-in-Chrome MCP capture launcher", [
+        Step(Kind.COPY, "claude-mcp-chrome", REPO / "scripts/claude-mcp-chrome.sh", LB / "claude-mcp-chrome", executable=True),
+    ])
+
+    coolify = Module("coolify-notify", "Staging deploy notifications (user timer)", [
+        Step(Kind.COPY, "coolify-staging-notify.sh", REPO / "scripts/coolify-staging-notify.sh", LB / "coolify-staging-notify.sh", executable=True),
+        Step(Kind.COPY, "service unit", REPO / "systemd/coolify-staging-notify.service", CFG / "systemd/user/coolify-staging-notify.service"),
+        Step(Kind.COPY, "timer unit", REPO / "systemd/coolify-staging-notify.timer", CFG / "systemd/user/coolify-staging-notify.timer"),
+        Step(Kind.ACTION, "enable user timer", run=enable_coolify_timer,
+             dry_note="systemctl --user daemon-reload && enable --now coolify-staging-notify.timer"),
+    ])
+
+    sync_hooks = Module("sync-hooks", "Sync helpers, self-install, pacman hook", [
+        Step(Kind.SYMLINK, "dotfiles-sync", REPO / "scripts/dotfiles-sync.sh", LB / "dotfiles-sync", executable=True),
+        Step(Kind.SYMLINK, "dotfiles-pacman-hook", REPO / "scripts/dotfiles-pacman-hook.sh", LB / "dotfiles-pacman-hook", executable=True),
+        Step(Kind.SYMLINK, "disable-hyprland-split-workspaces", REPO / "scripts/disable-hyprland-split-workspaces.sh", LB / "disable-hyprland-split-workspaces", executable=True),
+        Step(Kind.SYMLINK, "dot (self-install)", REPO / "dot", LB / "dot", executable=True),
+        Step(Kind.ACTION, "install pacman hook (passwordless sudo only)",
+             dry_note="install-pacman-sync-hook.sh (needs sudo -n)",
+             run_argv=[str(REPO / "scripts/install-pacman-sync-hook.sh")],
+             guard=Guard(repo_exists=REPO / "pacman/99-dotfiles-sync.hook.in", sudo_n=True),
+             skip_hint=f"no passwordless sudo; run: {REPO / 'scripts/install-pacman-sync-hook.sh'}"),
+    ])
+
+    return [hypr, kitty, zsh, vscode, sidepad, project_hub, waybar, claude, claude_mcp, coolify, sync_hooks]
+
+
+# --- helpers ----------------------------------------------------------------
+
+def sha256(path: Path) -> Optional[str]:
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def is_executable(path: Path) -> bool:
+    return os.access(path, os.X_OK)
+
+
+def make_executable(path: Path) -> None:
+    st = os.stat(path)
+    os.chmod(path, st.st_mode | 0o111)
+
+
+def guard_skip_reason(g: Guard) -> Optional[str]:
+    """Return a human reason if the step must be skipped, else None."""
+    if g.repo_exists is not None and not g.repo_exists.exists():
+        return f"missing in repo: {g.repo_exists.name}"
+    if g.target_exists is not None and not g.target_exists.exists():
+        return f"target absent: {g.target_exists}"
+    if g.command is not None and shutil.which(g.command) is None:
+        return f"command not found: {g.command}"
+    if g.sudo_n and subprocess.run(
+        ["sudo", "-n", "true"], check=False,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode != 0:
+        return "no passwordless sudo"
+    return None
+
+
+def tree_diff(src: Path, dst: Path):
+    """Return (changed, missing_in_target, extra_in_target) file counts."""
+    def rel_files(root):
+        out = {}
+        for base, _dirs, files in os.walk(root):
+            for f in files:
+                p = Path(base) / f
+                out[p.relative_to(root)] = p
+        return out
+
+    s = rel_files(src)
+    d = rel_files(dst)
+    changed = sum(1 for r, p in s.items() if r in d and sha256(p) != sha256(d[r]))
+    missing = sum(1 for r in s if r not in d)
+    extra = sum(1 for r in d if r not in s)
+    return changed, missing, extra
+
+
+# --- status -----------------------------------------------------------------
+
+def step_status(step: Step) -> Status:
+    reason = guard_skip_reason(step.guard)
+    if reason:
+        return Status(SKIPPED, reason)
+
+    k = step.kind
+    if k is Kind.ACTION:
+        return Status(ACTION_ONLY, "runs on deploy")
+    if k is Kind.MKDIR:
+        return Status(IN_SYNC if step.dst.exists() else NEW)
+
+    if k is Kind.COPY:
+        if step.src is None or not step.src.exists():
+            return Status(SKIPPED, "missing source")
+        if not step.dst.exists():
+            return Status(NEW)
+        if sha256(step.src) != sha256(step.dst):
+            return Status(DRIFTED, "content")
+        if step.executable and not is_executable(step.dst):
+            return Status(DRIFTED, "mode")
+        return Status(IN_SYNC)
+
+    if k is Kind.DIR_SYNC:
+        if not step.dst.exists():
+            return Status(NEW)
+        changed, missing, extra = tree_diff(step.src, step.dst)
+        if changed or missing or extra:
+            bits = []
+            if changed:
+                bits.append(f"{changed} changed")
+            if missing:
+                bits.append(f"{missing} new")
+            if extra:
+                bits.append(f"{extra} extra")
+            return Status(DRIFTED, ", ".join(bits))
+        return Status(IN_SYNC)
+
+    if k is Kind.SYMLINK:
+        if not step.dst.is_symlink():
+            return Status(NEW if not step.dst.exists() else DRIFTED, "not a symlink")
+        if os.readlink(step.dst) != str(step.src):
+            return Status(DRIFTED, "wrong target")
+        return Status(IN_SYNC)
+
+    if k is Kind.GEN_IF_MISSING:
+        if step.dst.exists() and step.dst.stat().st_size > 0:
+            return Status(IN_SYNC, "user state")
+        return Status(NEW)
+
+    if k is Kind.LEGACY_RM:
+        return Status(DRIFTED, "legacy, will remove") if step.dst.exists() else Status(IN_SYNC)
+
+    return Status(SKIPPED, "unknown kind")
+
+
+def module_status(module: Module) -> Status:
+    states = [step_status(s).state for s in module.steps]
+    syncable = [s for s in states if s not in (ACTION_ONLY, SKIPPED)]
+    if not syncable:
+        return Status(ACTION_ONLY if ACTION_ONLY in states else SKIPPED)
+    if DRIFTED in syncable:
+        n = sum(1 for s in syncable if s == DRIFTED)
+        return Status(DRIFTED, f"{n} drift")
+    if NEW in syncable:
+        return Status(NEW if all(s == NEW for s in syncable) else DRIFTED,
+                      f"{sum(1 for s in syncable if s == NEW)} new")
+    return Status(IN_SYNC)
+
+
+# --- apply ------------------------------------------------------------------
+
+def _mirror_dir(src: Path, dst: Path) -> None:
+    """rsync -a --delete with a stdlib fallback. Delete pass is guarded."""
+    dst.mkdir(parents=True, exist_ok=True)
+    if shutil.which("rsync"):
+        subprocess.run(["rsync", "-a", "--delete", f"{src}/", f"{dst}/"], check=True)
+        return
+    shutil.copytree(src, dst, dirs_exist_ok=True)
+    # honour --delete: remove targets not present in source, but only under ~/.config
+    base = (HOME / ".config").resolve()
+    if base not in dst.resolve().parents and dst.resolve() != base:
+        raise RuntimeError(f"refusing to prune outside ~/.config: {dst}")
+    src_rel = {p.relative_to(src) for p in src.rglob("*") if p.is_file()}
+    for p in sorted(dst.rglob("*"), reverse=True):
+        rel = p.relative_to(dst)
+        if p.is_file() and rel not in src_rel:
+            p.unlink()
+        elif p.is_dir() and not any(p.iterdir()):
+            p.rmdir()
+
+
+def apply_step(step: Step, dry_run: bool) -> str:
+    """Run one step. Returns a short past-tense verb for reporting."""
+    reason = guard_skip_reason(step.guard)
+    if reason:
+        if step.skip_hint:
+            print(f"      ! {step.skip_hint}")
+        return f"skipped ({reason})"
+
+    st = step_status(step)
+    k = step.kind
+
+    if k is Kind.ACTION:
+        if dry_run:
+            return f"would run: {step.dry_note}"
+        if step.run is not None:
+            step.run()
+            return "ran"
+        rc = subprocess.run(step.run_argv, check=False).returncode
+        return "ran" if rc == 0 else f"failed (rc={rc})"
+
+    if k is Kind.MKDIR:
+        if dry_run:
+            return "ok" if st.state == IN_SYNC else "would create"
+        step.dst.mkdir(parents=True, exist_ok=True)
+        return "ok"
+
+    if k is Kind.COPY:
+        if st.state == SKIPPED:
+            return f"skipped ({st.detail})"
+        if dry_run:
+            return "ok" if st.state == IN_SYNC else f"would copy ({st.state})"
+        step.dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(step.src, step.dst)
+        if step.executable:
+            make_executable(step.dst)
+        return "ok" if st.state == IN_SYNC else "copied"
+
+    if k is Kind.DIR_SYNC:
+        if dry_run:
+            return "ok" if st.state == IN_SYNC else f"would sync ({st.detail or st.state})"
+        _mirror_dir(step.src, step.dst)
+        if step.exec_glob:
+            for p in step.dst.glob(step.exec_glob):
+                make_executable(p)
+        return "ok" if st.state == IN_SYNC else "synced"
+
+    if k is Kind.SYMLINK:
+        if dry_run:
+            return "ok" if st.state == IN_SYNC else f"would link ({st.state})"
+        if step.executable and step.src.exists():
+            make_executable(step.src)
+        step.dst.parent.mkdir(parents=True, exist_ok=True)
+        if step.dst.is_symlink() or step.dst.exists():
+            step.dst.unlink()
+        step.dst.symlink_to(step.src)
+        return "ok" if st.state == IN_SYNC else "linked"
+
+    if k is Kind.GEN_IF_MISSING:
+        if st.state == IN_SYNC:
+            return "ok"
+        if dry_run:
+            return "would generate"
+        content = step.generator() if step.generator else ""
+        if content:
+            step.dst.parent.mkdir(parents=True, exist_ok=True)
+            step.dst.write_text(content)
+            return "generated"
+        return "skipped (nothing to generate)"
+
+    if k is Kind.LEGACY_RM:
+        if st.state == IN_SYNC:
+            return "ok"
+        if dry_run:
+            return "would remove"
+        step.dst.unlink()
+        return "removed"
+
+    return "skipped (unknown)"
+
+
+# --- colour -----------------------------------------------------------------
+
+_COLOR = sys.stdout.isatty()
+_CODES = {IN_SYNC: "32", DRIFTED: "33", NEW: "36", SKIPPED: "90", ACTION_ONLY: "35"}
+
+
+def paint(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _COLOR else text
+
+
+def state_label(state: str) -> str:
+    text = {IN_SYNC: "in sync", DRIFTED: "drift", NEW: "new",
+            SKIPPED: "skip", ACTION_ONLY: "action"}[state]
+    return paint(text, _CODES[state])
+
+
+# --- commands ---------------------------------------------------------------
+
+def select_modules(reg: List[Module], names) -> List[Module]:
+    if not names:
+        return reg
+    wanted = set(names)
+    chosen = [m for m in reg if m.name in wanted]
+    missing = wanted - {m.name for m in chosen}
+    if missing:
+        raise SystemExit(f"unknown module(s): {', '.join(sorted(missing))}\n"
+                         f"available: {', '.join(m.name for m in reg)}")
+    return chosen
+
+
+def deploy(reg: List[Module], names=None, step_filter=None, dry_run=False) -> None:
+    modules = select_modules(reg, names)
+    header = "Dry-run (no changes)" if dry_run else "Deploying"
+    print(f"{header} from {REPO}\n")
+    single = len(modules) == 1
+    for m in modules:
+        print(paint(m.name, "1"))
+        for idx, step in enumerate(m.steps):
+            if single and step_filter is not None and idx not in step_filter:
+                continue
+            result = apply_step(step, dry_run)
+            print(f"   {step.label:<34} {result}")
+        print()
+    if not dry_run:
+        print("Done. Reload hints: Super+Shift+R (shell), kill -SIGUSR1 $(pgrep kitty).")
+
+
+def cmd_status(reg: List[Module], module=None, verbose=False) -> None:
+    modules = select_modules(reg, [module] if module else None)
+    show_steps = verbose or module is not None
+    counts = {IN_SYNC: 0, DRIFTED: 0, NEW: 0, SKIPPED: 0, ACTION_ONLY: 0}
+    for m in modules:
+        ms = module_status(m)
+        counts[ms.state] = counts.get(ms.state, 0) + 1
+        detail = f"  ({ms.detail})" if ms.detail else ""
+        print(f"  {state_label(ms.state):<18} {m.name:<16}{detail}")
+        if show_steps:
+            for step in m.steps:
+                ss = step_status(step)
+                sd = f"  {ss.detail}" if ss.detail else ""
+                print(f"        {state_label(ss.state):<18} {step.label}{sd}")
+    print()
+    summary = ", ".join(f"{n} {state_label(s)}" for s, n in counts.items() if n)
+    print(f"  {summary}")
+
+
+def cmd_diff(reg: List[Module], module=None) -> None:
+    modules = select_modules(reg, [module] if module else None)
+    for m in modules:
+        for step in m.steps:
+            if step.kind is Kind.COPY and step.src and step.src.exists() and step.dst.exists():
+                a = step.src.read_text(errors="replace").splitlines(keepends=True)
+                b = step.dst.read_text(errors="replace").splitlines(keepends=True)
+                d = list(difflib.unified_diff(b, a, fromfile=f"live {step.dst}", tofile=f"repo {step.src}"))
+                if d:
+                    print(f"# {m.name} / {step.label}")
+                    sys.stdout.writelines(d)
+                    print()
+            elif step.kind is Kind.DIR_SYNC and step.dst.exists():
+                changed, missing, extra = tree_diff(step.src, step.dst)
+                if changed or missing or extra:
+                    print(f"# {m.name} / {step.label}: {changed} changed, {missing} new, {extra} extra\n")
+            elif step.kind is Kind.ACTION:
+                print(f"# {m.name} / {step.label}: {step.dry_note}\n")
+
+
+def cmd_snapshot(reg: List[Module]) -> None:
+    print(f"Snapshotting machine state into {REPO}\n")
+    for m in reg:
+        for step in m.steps:
+            if step.kind is Kind.COPY and step.snapshot and step.dst.exists():
+                step.src.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(step.dst, step.src)
+                print(f"   {step.src.relative_to(REPO)}")
+
+    pkg = REPO / "packages"
+    pkg.mkdir(exist_ok=True)
+    if shutil.which("pacman"):
+        for flag, name in (("-Qqe", "pacman-explicit.txt"), ("-Qqm", "aur.txt")):
+            out = subprocess.run(["pacman", flag], check=False, text=True, capture_output=True).stdout
+            (pkg / name).write_text(out)
+            print(f"   packages/{name} ({out.count(chr(10))})")
+    if shutil.which("code"):
+        out = subprocess.run(["code", "--list-extensions"], check=False, text=True, capture_output=True).stdout
+        (REPO / "vscode" / "extensions.txt").write_text(out)
+        print(f"   vscode/extensions.txt ({out.count(chr(10))})")
+
+    print("\nDone. Review with 'git diff' and commit.")
+
+
+def cmd_sync(args) -> None:
+    script = REPO / "scripts" / "dotfiles-sync.sh"
+    os.execv(str(script), [str(script)] + list(args))
+
+
+# --- TUI --------------------------------------------------------------------
+
+class App:
+    """curses front-end. tabs (all + modules) over a checkbox list with drift."""
+
+    MARK = {IN_SYNC: "=", DRIFTED: "~", NEW: "+", SKIPPED: "·", ACTION_ONLY: "*"}
+
+    def __init__(self, stdscr, reg: List[Module]):
+        self.scr = stdscr
+        self.reg = reg
+        self.tabs = ["all"] + [m.name for m in reg]
+        self.tab = 0
+        self.cursor = 0
+        self.top = 0
+        self.selected_modules = {m.name for m in reg}
+        self.selected_steps = {m.name: set(range(len(m.steps))) for m in reg}
+        self.request = None
+        self.refresh_status()
+        self._init_colors()
+
+    def _init_colors(self):
+        self.colors = {}
+        if not curses.has_colors():
+            return
+        curses.start_color()
+        curses.use_default_colors()
+        pairs = {IN_SYNC: curses.COLOR_GREEN, DRIFTED: curses.COLOR_YELLOW,
+                 NEW: curses.COLOR_CYAN, ACTION_ONLY: curses.COLOR_MAGENTA}
+        for i, (state, col) in enumerate(pairs.items(), start=1):
+            curses.init_pair(i, col, -1)
+            self.colors[state] = curses.color_pair(i)
+        self.colors[SKIPPED] = curses.A_DIM
+
+    def attr(self, state):
+        return self.colors.get(state, 0)
+
+    def refresh_status(self):
+        self.mod_status = {m.name: module_status(m) for m in self.reg}
+        self.step_status = {m.name: [step_status(s) for s in m.steps] for m in self.reg}
+
+    # current-context helpers -------------------------------------------------
+    def is_all(self):
+        return self.tab == 0
+
+    def cur_module(self):
+        return self.reg[self.tab - 1]
+
+    def rows(self):
+        if self.is_all():
+            return [(m.name, self.mod_status[m.name], m.summary) for m in self.reg]
+        m = self.cur_module()
+        return [(s.label, self.step_status[m.name][i], "") for i, s in enumerate(m.steps)]
+
+    def is_checked(self, i):
+        if self.is_all():
+            return self.reg[i].name in self.selected_modules
+        return i in self.selected_steps[self.cur_module().name]
+
+    def toggle(self, i):
+        if self.is_all():
+            name = self.reg[i].name
+            self.selected_modules ^= {name}
+        else:
+            steps = self.selected_steps[self.cur_module().name]
+            steps ^= {i}
+
+    def toggle_all(self):
+        rows = self.rows()
+        if self.is_all():
+            allnames = {m.name for m in self.reg}
+            self.selected_modules = set() if self.selected_modules == allnames else allnames
+        else:
+            name = self.cur_module().name
+            full = set(range(len(rows)))
+            self.selected_steps[name] = set() if self.selected_steps[name] == full else full
+
+    def count_selected(self):
+        if self.is_all():
+            return len(self.selected_modules)
+        return len(self.selected_steps[self.cur_module().name])
+
+    # render ------------------------------------------------------------------
+    def addnstr(self, y, x, s, attr=0):
+        h, w = self.scr.getmaxyx()
+        if 0 <= y < h and 0 <= x < w:
+            try:
+                self.scr.addnstr(y, x, s, max(0, w - x - 1), attr)
+            except curses.error:
+                pass
+
+    def draw(self):
+        self.scr.erase()
+        h, w = self.scr.getmaxyx()
+        self.addnstr(0, 0, "dot   repo ↔ live machine", curses.A_BOLD)
+
+        x = 0
+        for i, t in enumerate(self.tabs):
+            seg = f" {t} "
+            self.addnstr(1, x, seg, curses.A_REVERSE if i == self.tab else curses.A_DIM)
+            x += len(seg) + 1
+        self.addnstr(2, 0, "─" * (w - 1))
+
+        rows = self.rows()
+        view_h = h - 5
+        if self.cursor < self.top:
+            self.top = self.cursor
+        elif self.cursor >= self.top + view_h:
+            self.top = self.cursor - view_h + 1
+
+        for vi in range(view_h):
+            ri = self.top + vi
+            if ri >= len(rows):
+                break
+            label, status, summary = rows[ri]
+            box = "[x]" if self.is_checked(ri) else "[ ]"
+            mark = self.MARK.get(status.state, "?")
+            line = f" {box} {mark} {label}"
+            row_attr = curses.A_REVERSE if ri == self.cursor else 0
+            self.addnstr(3 + vi, 0, line.ljust(w - 1), row_attr)
+            # colourise the marker + state when not on the cursor row
+            if not row_attr:
+                self.addnstr(3 + vi, 5, mark, self.attr(status.state))
+            tail = state_label_plain(status)
+            self.addnstr(3 + vi, max(0, w - len(tail) - 2), tail,
+                         row_attr or self.attr(status.state))
+
+        self.addnstr(h - 1, 0,
+                     f" ↑↓ move  space toggle  ←→ context  a all/none  "
+                     f"enter deploy ({self.count_selected()})  r refresh  q quit",
+                     curses.A_DIM)
+        self.scr.refresh()
+
+    def handle(self, k):
+        rows = self.rows()
+        if k in (curses.KEY_DOWN, ord("j")):
+            self.cursor = min(len(rows) - 1, self.cursor + 1)
+        elif k in (curses.KEY_UP, ord("k")):
+            self.cursor = max(0, self.cursor - 1)
+        elif k in (curses.KEY_RIGHT, ord("l")):
+            self.tab = (self.tab + 1) % len(self.tabs)
+            self.cursor = self.top = 0
+        elif k in (curses.KEY_LEFT, ord("h")):
+            self.tab = (self.tab - 1) % len(self.tabs)
+            self.cursor = self.top = 0
+        elif k == ord(" "):
+            if rows:
+                self.toggle(self.cursor)
+        elif k == ord("a"):
+            self.toggle_all()
+        elif k == ord("r"):
+            self.refresh_status()
+        elif k in (curses.KEY_ENTER, 10, 13):
+            self._build_request()
+            return False
+        elif k in (ord("q"), 27):
+            return False
+        return True
+
+    def _build_request(self):
+        if self.is_all():
+            names = [m.name for m in self.reg if m.name in self.selected_modules]
+            if names:
+                self.request = (names, None)
+        else:
+            name = self.cur_module().name
+            self.request = ([name], set(self.selected_steps[name]))
+
+    def run(self):
+        curses.curs_set(0)
+        self.scr.keypad(True)
+        while True:
+            self.draw()
+            if not self.handle(self.scr.getch()):
+                break
+        return self.request
+
+
+def state_label_plain(status: Status) -> str:
+    text = {IN_SYNC: "in sync", DRIFTED: "drift", NEW: "new",
+            SKIPPED: "skip", ACTION_ONLY: "action"}[status.state]
+    return f"{text} {status.detail}".strip() if status.detail else text
+
+
+def run_tui(reg: List[Module]) -> None:
+    if not (sys.stdout.isatty() and sys.stdin.isatty()):
+        print("dot: interactive TUI needs a terminal. Use `dot status` or `dot deploy`.")
+        return
+    try:
+        request = curses.wrapper(lambda scr: App(scr, reg).run())
+    except curses.error as exc:
+        raise SystemExit(f"dot: terminal too small or curses error: {exc}")
+    if request:
+        names, step_filter = request
+        print()
+        deploy(reg, names=names, step_filter=step_filter, dry_run=False)
+
+
+# --- entrypoint -------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="dot", description="dotfiles front door")
+    sub = parser.add_subparsers(dest="command")
+
+    p_deploy = sub.add_parser("deploy", help="apply repo state to the machine")
+    p_deploy.add_argument("modules", nargs="*", help="modules to deploy (default: all)")
+    p_deploy.add_argument("--dry-run", action="store_true", help="show changes, touch nothing")
+
+    p_status = sub.add_parser("status", help="show per-module drift")
+    p_status.add_argument("module", nargs="?", help="limit to one module (shows steps)")
+    p_status.add_argument("-v", "--verbose", action="store_true", help="show every step")
+
+    p_diff = sub.add_parser("diff", help="show repo-vs-live diffs")
+    p_diff.add_argument("module", nargs="?", help="limit to one module")
+
+    sub.add_parser("snapshot", help="capture machine drift back into the repo")
+
+    p_sync = sub.add_parser("sync", help="snapshot + commit + push (dotfiles-sync)")
+    p_sync.add_argument("args", nargs=argparse.REMAINDER, help="passed to dotfiles-sync")
+
+    return parser
+
+
+def main() -> None:
+    reg = build_registry()
+    args = build_parser().parse_args()
+
+    if args.command is None:
+        run_tui(reg)
+    elif args.command == "deploy":
+        deploy(reg, names=args.modules, dry_run=args.dry_run)
+    elif args.command == "status":
+        cmd_status(reg, module=args.module, verbose=args.verbose)
+    elif args.command == "diff":
+        cmd_diff(reg, module=args.module)
+    elif args.command == "snapshot":
+        cmd_snapshot(reg)
+    elif args.command == "sync":
+        cmd_sync(args.args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        sys.exit(0)
+    except KeyboardInterrupt:
+        sys.exit(130)
