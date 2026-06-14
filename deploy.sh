@@ -18,6 +18,12 @@ cp "$DOTFILES/hypr/reload-desktop.sh" "$HOME/.local/bin/reload-desktop.sh"
 chmod +x "$HOME/.local/bin/reload-desktop.sh"
 echo "  -> ~/.local/bin/reload-desktop.sh"
 
+# Dedicated Chrome launcher for Claude-in-Chrome MCP capture (see custom.conf
+# windowrules for class:claude-mcp). Isolated profile + fixed-size pinned window.
+cp "$DOTFILES/scripts/claude-mcp-chrome.sh" "$HOME/.local/bin/claude-mcp-chrome"
+chmod +x "$HOME/.local/bin/claude-mcp-chrome"
+echo "  -> ~/.local/bin/claude-mcp-chrome"
+
 # Coolify staging deploy notifications (systemd user timer -> notify-send)
 cp "$DOTFILES/scripts/coolify-staging-notify.sh" "$HOME/.local/bin/coolify-staging-notify.sh"
 chmod +x "$HOME/.local/bin/coolify-staging-notify.sh"
