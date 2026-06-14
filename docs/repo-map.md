@@ -6,10 +6,14 @@ mirror live config targets, while others are local tools that get installed into
 
 ## Entrypoints
 
-- `deploy.sh` - applies this repo to the live machine.
-- `snapshot.sh` - captures selected live machine state back into this repo.
+- `dot` - the front-door CLI/TUI (repo root). A module registry behind
+  `deploy`, `status`, `diff`, `snapshot`, and `sync`. Run `dot` with no args
+  for the interactive deploy UI. Self-installs to `~/.local/bin/dot` on first
+  deploy via the `sync-hooks` module.
+- `deploy.sh` - thin shim for `dot deploy`; applies this repo to the machine.
+- `snapshot.sh` - thin shim for `dot snapshot`; captures selected live state.
 - `dotfiles-sync` - installed from `scripts/dotfiles-sync.sh`; snapshots,
-  commits, and pushes.
+  commits, and pushes. `dot sync` execs it.
 
 ## Desktop Shell
 

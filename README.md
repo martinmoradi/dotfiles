@@ -9,15 +9,22 @@ sync that state.
 
 ## Daily Commands
 
+`dot` is the front door. Run `./dot` from the repo the first time; it installs
+itself to `~/.local/bin/dot`, so after one deploy plain `dot` works anywhere.
+
 ```bash
-./deploy.sh
-./snapshot.sh
-dotfiles-sync --all
+dot              # interactive UI: tabs + checkboxes + drift markers
+dot status       # what has drifted between repo and machine
+dot deploy       # apply everything (dot deploy hypr waybar for a subset)
+dot deploy --dry-run
+dot snapshot     # capture machine drift back into the repo
+dot sync         # snapshot, commit, and push
 ```
 
-- `./deploy.sh` applies repo state to the live machine.
-- `./snapshot.sh` captures drift from the live machine back into the repo.
-- `dotfiles-sync --all` snapshots, commits, and pushes local state.
+- `dot status` / `dot diff [module]` show drift without changing anything.
+- `dot deploy [modules...]` applies repo state; `--dry-run` previews it.
+- The old entrypoints still work: `./deploy.sh` and `./snapshot.sh` are thin
+  shims for `dot deploy` / `dot snapshot`, and `dot sync` calls `dotfiles-sync`.
 
 ## Repo Map
 
@@ -42,7 +49,7 @@ and system hook locations is generated or patched from here.
 
 The exception is machine state that naturally changes outside the repo:
 installed packages, VS Code extensions, and monitor layout. Capture those with
-`./snapshot.sh` before committing.
+`dot snapshot` before committing.
 
 ## Project Hub
 
