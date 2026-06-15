@@ -13,6 +13,20 @@
   services or other agents running in parallel, and clean up your process when
   you're done.
 
+## Browser automation
+- Default to `agent-browser` (headless) for anything it can do: scraping,
+  one-shot checks, DOM queries, screenshots of static pages.
+- When headless is not enough (real GPU/canvas, extensions, visual rendering
+  that needs a live compositor, or hand-off to the Claude-in-Chrome MCP), use
+  the dedicated Chrome: launch `claude-mcp-chrome` (isolated profile, class
+  `claude-mcp`, pinned 1280x900 on the HDMI-A-1 vertical monitor). Start it
+  before using mcp__claude-in-chrome__* tools if no `claude-mcp` browser is
+  connected, and prefer that instance over the main Chrome via select_browser.
+  The extension needs a few seconds to connect after launch, so wait ~8s
+  before the first list_connected_browsers (an immediate call returns empty).
+  Close it when done; relaunching re-applies its placement. (Defined in
+  ~/src/perso/dotfiles, deployed onto PATH.)
+
 ## Writing style
 - In user-facing prose, docs, and content: no "AI style" writing. In
   particular, avoid em dashes; prefer plain, direct sentences.
