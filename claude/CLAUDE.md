@@ -14,24 +14,11 @@
   you're done.
 
 ## Browser automation
-- Prefer `agent-browser` for everything it can do. It is genuinely more powerful
-  and efficient than the Claude-in-Chrome MCP, and it has two modes:
-  - headless for scraping, one-shot checks, DOM queries, and screenshots of
-    static pages.
-  - headed for real hover/scroll/framework events (Webflow IX2, GSAP), canvas,
-    or anything a live compositor must actually render. Open it on the second
-    monitor with the shared placement class:
-    `agent-browser open <url> --headed --args "--class=claude-mcp"`.
-    Hyprland pins the `claude-mcp` class floating on HDMI-A-1, the vertical
-    monitor. Close it when done.
-- `claude-mcp-chrome` (real Chrome + the Claude-in-Chrome extension) is the
-  fallback, for when you specifically need the `mcp__claude-in-chrome__*` tools
-  or an interactive session in Martin's real browser. It shares the same
-  `claude-mcp` placement class. Start it before those tools if no `claude-mcp`
-  browser is connected, wait ~8s for the extension to connect (an immediate
-  list_connected_browsers returns empty), prefer it over the main Chrome via
-  select_browser, and close it when done.
-- Both launchers are defined in ~/src/perso/dotfiles and deployed onto PATH.
+- Use `agent-browser` for browser work. Headless for scraping, DOM queries, and
+  static screenshots; headed for real hover/scroll/framework events (GSAP,
+  Webflow IX2), canvas, or anything a live compositor must render. Open headed on
+  the second monitor with `agent-browser open <url> --headed --args
+  "--class=claude-mcp"` (Hyprland pins that class to HDMI-A-1). Close it when done.
 
 ## Writing style
 - In user-facing prose, docs, and content: no "AI style" writing. In

@@ -13,27 +13,17 @@
 - When you need a long-running process, run your own on a non-default port that
   you own. Check what is already bound first so you never collide with Martin's
   services or other agents running in parallel, tell Martin the port or URL, and
-  clean up your process when you are done. One-shot commands such as build, test,
-  or agent-browser are always fine.
+  clean up your process when you are done.
 
 ## Browser Automation
 
-- Prefer the `agent-browser` CLI for everything it can do. It is genuinely more
-  powerful and efficient than an in-app browser, and it has two modes:
-  - headless for scraping, one-shot checks, DOM queries, and screenshots of
-    static pages.
-  - headed for real hover/scroll/framework events (Webflow IX2, GSAP), canvas,
-    or anything a live compositor must actually render. Open it on the second
-    monitor with the shared placement class:
-    `agent-browser open <url> --headed --args "--class=claude-mcp"`. Hyprland
-    pins the `claude-mcp` class floating on HDMI-A-1, the vertical monitor.
-    Close it when done.
-- On Martin's CachyOS Linux machine, do not use the Codex in-app Browser path.
-  The GUI app is an imperfect port from the macOS build, and its browser runtime
-  often is not available in a thread. Do not try to recover it or look for
-  `node_repl` browser tooling. Related startup clues include `MCP client for
-  node_repl failed to start`, `Exec format error (os error 8)`, and `MCP startup
-  incomplete (failed: node_repl)`.
+- Use `agent-browser` for browser work, never the Codex in-app browser (broken
+  here, not worth recovering: `node_repl` / "Exec format error" startup
+  failures). Headless for scraping, DOM queries, and static screenshots; headed
+  for real hover/scroll/framework events (GSAP, Webflow IX2), canvas, or anything
+  a live compositor must render. Open headed on the second monitor with
+  `agent-browser open <url> --headed --args "--class=claude-mcp"` (Hyprland pins
+  that class to HDMI-A-1). Close it when done.
 
 ## Writing Style
 
