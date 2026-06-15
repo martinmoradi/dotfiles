@@ -21,7 +21,11 @@ alias lt='eza -a --tree --level=1 --icons=always'
 alias ff='fastfetch'
 alias txt='micro'
 alias text='micro'
-alias claudex='claude --dangerously-skip-permissions'
+# Yolo launchers (bypass all guardrails). Both resolve to the sleep-inhibitor
+# wrapper functions in 50-martin. `cc` shadows the gcc symlink interactively;
+# use `command cc` / `\cc` for the C compiler.
+alias cc='claude --dangerously-skip-permissions'
+alias cx='codex --dangerously-bypass-approvals-and-sandbox'
 
 alias docs='open_folder "$HOME/Documents"'
 alias dl='open_folder "$HOME/Downloads"'

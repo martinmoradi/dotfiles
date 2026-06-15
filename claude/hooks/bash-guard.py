@@ -2,7 +2,7 @@
 """PreToolUse guard for Bash commands.
 
 Blocks high-blast-radius commands before they execute. Runs even in
-bypassPermissions mode (claudex), so this is the last line of defense.
+bypassPermissions mode (the `cc` alias), so this is the last line of defense.
 Exit 2 + stderr = blocked; Claude sees the reason and asks Martin instead.
 
 Tune the patterns below; keep them high-signal — a guard that blocks
