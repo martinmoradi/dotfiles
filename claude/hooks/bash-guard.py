@@ -113,6 +113,20 @@ def push_protected_target(words: list[str], cwd: str) -> str:
     return branch if branch in PROTECTED_BRANCHES else ""
 
 
+def push_delete_target(words: list[str]) -> str:
+    """Protected branch this push tries to DELETE on the remote, or "".
+
+    Covers both `git push origin --delete production` and the colon form
+    `git push origin :production` (empty source = delete the destination)."""
+    positionals = push_positionals(words)
+    refspecs = positionals[1:] if len(positionals) >= 2 else []
+    deleting = any(w in ("--delete", "-d") for w in words)
+    for ref in refspecs:
+        is_colon_delete = ":" in ref and ref.split(":")[0].strip("+") == ""
+        if (deleting or is_colon_delete) and refspec_dst(ref) in PROTECTED_BRANCHES:
+            return refspec_dst(ref)
+    return ""
+
 
 def is_jukkai_repo(cwd: str) -> bool:
     """Whether cwd belongs to a jukkai repo, following worktrees to their
@@ -136,6 +150,11 @@ def check_git_push(segment: str, cwd: str) -> None:
     if not re.match(r"^(sudo\s+)?git(\s+-C\s+\S+)?\s+push\b", segment):
         return
     words = segment.split()
+    # Deleting a protected branch on the remote is destructive everywhere,
+    # not just in jukkai — block it regardless of repo.
+    deleted = push_delete_target(words)
+    if deleted:
+        block(f"deleting protected branch '{deleted}' on the remote")
     forced = any(w in ("--force", "-f") for w in words)
     target = push_protected_target(words, cwd)
     if forced and target:
@@ -148,6 +167,32 @@ def check_git_push(segment: str, cwd: str) -> None:
         block(f"direct push to '{target}' in a jukkai repo — policy is branch + PR")
 
 
+def check_git_branch_delete(segment: str) -> None:
+    """Block deleting a protected branch locally: `git branch -d/-D/--delete`.
+    Guards routine worktree/branch cleanup from nuking main/production."""
+    if not re.match(r"^(sudo\s+)?git(\s+-C\s+\S+)?\s+branch\b", segment):
+        return
+    words = segment.split()
+    # delete flag: --delete, or a short cluster containing d/D (-d, -D, -dr, -Df)
+    deleting = any(
+        w == "--delete" or (re.fullmatch(r"-[a-zA-Z]+", w) and ("d" in w or "D" in w))
+        for w in words
+    )
+    if not deleting:
+        return
+    # branch names are the positionals after `branch` (flags carry no values here)
+    seen_branch = False
+    for w in words:
+        if not seen_branch:
+            if w == "branch":
+                seen_branch = True
+            continue
+        if w.startswith("-"):
+            continue
+        # `git branch -d origin/production` deletes a remote-tracking ref (local
+        # bookkeeping, refetchable) — only the bare branch name is protected.
+        if w in PROTECTED_BRANCHES:
+            block(f"deleting protected branch '{w}'")
 
 
 def check_remote_prod(cmd: str) -> None:
@@ -185,6 +230,7 @@ def main() -> None:
     for segment in split_segments(cmd):
         check_rm(segment)
         check_git_push(segment, cwd)
+        check_git_branch_delete(segment)
     sys.exit(0)
 
 
