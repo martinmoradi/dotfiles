@@ -2,7 +2,7 @@
 """PreToolUse guard for Bash commands.
 
 Blocks high-blast-radius commands before they execute. Runs even in
-bypassPermissions mode (the `cc` alias), so this is the last line of defense.
+bypassPermissions mode (claudex), so this is the last line of defense.
 Exit 2 + stderr = blocked; Claude sees the reason and asks Martin instead.
 
 Tune the patterns below; keep them high-signal — a guard that blocks
@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 JUKKAI_PATHS = ("/home/martin/work/clients/jukkai", "/home/martin/src/pro/jukkai")
-PROTECTED_BRANCHES = {"main", "master"}
+PROTECTED_BRANCHES = {"main", "master", "production", "prod"}
 # rm -rf targets that are never OK without asking
 RM_DANGEROUS_EXACT = {"/", "~", "~/", "..", "../", "*", "$HOME", '"$HOME"', "/home/martin", "/home/martin/"}
 RM_DANGEROUS_RE = re.compile(r"^/(etc|usr|var|boot|home|opt|srv|lib|lib64|bin|sbin)/?$")
@@ -58,23 +58,96 @@ def check_rm(segment: str) -> None:
             block(f"rm -rf on high-blast-radius target '{t}'")
 
 
+# `git push` options that consume the following word as their value.
+PUSH_VALUE_OPTS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
+
+
+def push_positionals(words: list[str]) -> list[str]:
+    """Positional args after the `push` token: [remote, refspec...]."""
+    positionals: list[str] = []
+    seen_push = False
+    skip_next = False
+    for w in words:
+        if skip_next:
+            skip_next = False
+            continue
+        if not seen_push:
+            if w == "push":
+                seen_push = True
+            continue
+        if w.startswith("-"):
+            if w in PUSH_VALUE_OPTS:
+                skip_next = True
+            continue
+        positionals.append(w)
+    return positionals
+
+
+def refspec_dst(ref: str) -> str:
+    """Destination branch name of a refspec (`src:dst`, `dst`, `:dst`, `+dst`)."""
+    dst = ref.split(":")[-1] if ":" in ref else ref
+    dst = dst.lstrip("+")  # drop force marker
+    if dst.startswith("refs/heads/"):
+        dst = dst[len("refs/heads/"):]
+    return dst
+
+
+def push_protected_target(words: list[str], cwd: str) -> str:
+    """Return the protected branch this push targets, or "" if none.
+
+    Distinguishes `git push origin main` / `HEAD:production` (targets a
+    protected branch) from a feature branch that merely contains the word,
+    e.g. `feat/main-nav`, which must NOT be blocked. With no explicit refspec,
+    the current branch is what gets pushed — so we fall back to the branch
+    checked out in cwd (correct for worktrees, which are never on main/prod).
+    """
+    positionals = push_positionals(words)
+    # positionals are [remote, refspec...]; a lone positional is the remote.
+    refspecs = positionals[1:] if len(positionals) >= 2 else []
+    if refspecs:
+        for ref in refspecs:
+            if refspec_dst(ref) in PROTECTED_BRANCHES:
+                return refspec_dst(ref)
+        return ""
+    branch = current_branch(cwd)
+    return branch if branch in PROTECTED_BRANCHES else ""
+
+
+
+def is_jukkai_repo(cwd: str) -> bool:
+    """Whether cwd belongs to a jukkai repo, following worktrees to their
+    primary checkout so the branch+PR policy covers worktrees placed anywhere
+    (e.g. ~/.codex/worktrees/*/jukkai), not just those under JUKKAI_PATHS."""
+    if any(cwd.startswith(p) for p in JUKKAI_PATHS):
+        return True
+    try:
+        out = subprocess.run(["git", "-C", cwd, "rev-parse", "--git-common-dir"],
+                             capture_output=True, text=True, timeout=5)
+        common = out.stdout.strip()
+        if not common:
+            return False
+        common = os.path.realpath(os.path.join(cwd, common))
+        return any(common.startswith(p) for p in JUKKAI_PATHS)
+    except Exception:
+        return False
+
+
 def check_git_push(segment: str, cwd: str) -> None:
     if not re.match(r"^(sudo\s+)?git(\s+-C\s+\S+)?\s+push\b", segment):
         return
     words = segment.split()
     forced = any(w in ("--force", "-f") for w in words)
-    refs = " ".join(w for w in words if not w.startswith("-"))
-    targets_protected = bool(re.search(r"\b(main|master)\b", refs))
-    if not targets_protected:
-        branch = current_branch(cwd)
-        targets_protected = branch in PROTECTED_BRANCHES
-    if forced and targets_protected:
-        block("force-push to main/master")
+    target = push_protected_target(words, cwd)
+    if forced and target:
+        block(f"force-push to protected branch '{target}'")
     if forced and "--force-with-lease" not in segment:
         block("force-push without --force-with-lease")
-    # jukkai policy: never push main directly — branch + PR only
-    if targets_protected and any(cwd.startswith(p) for p in JUKKAI_PATHS):
-        block("direct push to main in a jukkai repo — policy is branch + PR")
+    # jukkai policy: never push main/production directly — branch + PR, and a
+    # push to 'production' is a live Coolify deploy that needs Martin's sign-off
+    if target and is_jukkai_repo(cwd):
+        block(f"direct push to '{target}' in a jukkai repo — policy is branch + PR")
+
+
 
 
 def check_remote_prod(cmd: str) -> None:
