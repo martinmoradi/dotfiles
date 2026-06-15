@@ -6,6 +6,8 @@
 - Branch + PR is the default for client/product repos (jukkai: never push main
   directly). Direct commits to main are fine only where the repo's CLAUDE.md
   says so (e.g. infra).
+- No agent attribution on commits or PRs: never add `Co-Authored-By: Claude`
+  trailers or "Generated with Claude Code" lines. Work ships under Martin's name.
 
 ## Running things
 - When you need a long-running process, run your own on a non-default port that
