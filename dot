@@ -235,6 +235,13 @@ def build_registry() -> List[Module]:
         # to the repo automatically. Codex shares CLAUDE.md via its own module.
         Step(Kind.SYMLINK, "CLAUDE.md", REPO / "claude" / "CLAUDE.md", CLAUDE / "CLAUDE.md"),
         Step(Kind.SYMLINK, "settings.json", REPO / "claude" / "settings.json", CLAUDE / "settings.json"),
+        # settings.json is symlinked + tracked, but Claude Code rewrites model/
+        # effort into it constantly. A git clean filter strips those keys on
+        # stage; register it here so a fresh clone strips them too.
+        Step(Kind.ACTION, "register settings clean filter",
+             run_argv=[str(REPO / "scripts/install-git-filters.sh")],
+             dry_note="git config filter.claude-runtime.clean/smudge (strip model/effort)",
+             guard=Guard(command="jq")),
     ])
 
     codex = Module("codex", "Codex global instructions (AGENTS.md)", [
