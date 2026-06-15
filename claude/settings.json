@@ -1,6 +1,5 @@
 {
   "includeCoAuthoredBy": false,
-  "model": "opus[1m]",
   "hooks": {
     "PreToolUse": [
       {
@@ -61,6 +60,5 @@
       }
     }
   },
-  "effortLevel": "high",
   "skipDangerousModePermissionPrompt": true
 }
