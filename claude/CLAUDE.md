@@ -14,18 +14,24 @@
   you're done.
 
 ## Browser automation
-- Default to `agent-browser` (headless) for anything it can do: scraping,
-  one-shot checks, DOM queries, screenshots of static pages.
-- When headless is not enough (real GPU/canvas, extensions, visual rendering
-  that needs a live compositor, or hand-off to the Claude-in-Chrome MCP), use
-  the dedicated Chrome: launch `claude-mcp-chrome` (isolated profile, class
-  `claude-mcp`, pinned 1280x900 on the HDMI-A-1 vertical monitor). Start it
-  before using mcp__claude-in-chrome__* tools if no `claude-mcp` browser is
-  connected, and prefer that instance over the main Chrome via select_browser.
-  The extension needs a few seconds to connect after launch, so wait ~8s
-  before the first list_connected_browsers (an immediate call returns empty).
-  Close it when done; relaunching re-applies its placement. (Defined in
-  ~/src/perso/dotfiles, deployed onto PATH.)
+- Prefer `agent-browser` for everything it can do. It is genuinely more powerful
+  and efficient than the Claude-in-Chrome MCP, and it has two modes:
+  - headless for scraping, one-shot checks, DOM queries, and screenshots of
+    static pages.
+  - headed for real hover/scroll/framework events (Webflow IX2, GSAP), canvas,
+    or anything a live compositor must actually render. Open it on the second
+    monitor with the shared placement class:
+    `agent-browser open <url> --headed --args "--class=claude-mcp"`.
+    Hyprland pins the `claude-mcp` class floating on HDMI-A-1, the vertical
+    monitor. Close it when done.
+- `claude-mcp-chrome` (real Chrome + the Claude-in-Chrome extension) is the
+  fallback, for when you specifically need the `mcp__claude-in-chrome__*` tools
+  or an interactive session in Martin's real browser. It shares the same
+  `claude-mcp` placement class. Start it before those tools if no `claude-mcp`
+  browser is connected, wait ~8s for the extension to connect (an immediate
+  list_connected_browsers returns empty), prefer it over the main Chrome via
+  select_browser, and close it when done.
+- Both launchers are defined in ~/src/perso/dotfiles and deployed onto PATH.
 
 ## Writing style
 - In user-facing prose, docs, and content: no "AI style" writing. In
