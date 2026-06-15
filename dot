@@ -31,6 +31,7 @@ HOME = Path.home()
 LB = HOME / ".local" / "bin"
 CFG = Path(os.environ.get("XDG_CONFIG_HOME") or (HOME / ".config"))
 CLAUDE = HOME / ".claude"
+CODEX = HOME / ".codex"
 
 
 # --- data model -------------------------------------------------------------
@@ -220,7 +221,6 @@ def build_registry() -> List[Module]:
     claude_files = [
         ("settings.json", False),
         ("settings.local.json", False),
-        ("CLAUDE.md", False),
         ("statusline.sh", True),
         ("hooks/bash-guard.py", True),
         ("hooks/auto-format.sh", True),
@@ -229,6 +229,15 @@ def build_registry() -> List[Module]:
     claude = Module("claude", "Claude Code settings, hooks, statusline, skills", [
         Step(Kind.COPY, rel, REPO / "claude" / rel, CLAUDE / rel, executable=ex, snapshot=True)
         for rel, ex in claude_files
+    ] + [
+        # Global instructions are repo-owned: symlink so edits to either side are
+        # the same file (no copy/snapshot round-trip). Codex shares the file via
+        # its own module below.
+        Step(Kind.SYMLINK, "CLAUDE.md", REPO / "claude" / "CLAUDE.md", CLAUDE / "CLAUDE.md"),
+    ])
+
+    codex = Module("codex", "Codex global instructions (AGENTS.md)", [
+        Step(Kind.SYMLINK, "AGENTS.md", REPO / "codex" / "AGENTS.md", CODEX / "AGENTS.md"),
     ])
 
     claude_mcp = Module("claude-mcp", "Claude-in-Chrome MCP capture launcher", [
@@ -257,7 +266,7 @@ def build_registry() -> List[Module]:
 
     # waybar first so its tab sits right after "all". Deploy order is unaffected
     # in practice: the patch only edits JSON and never restarts waybar.
-    return [waybar, hypr, kitty, zsh, vscode, sidepad, project_hub, claude, claude_mcp, coolify, sync_hooks]
+    return [waybar, hypr, kitty, zsh, vscode, sidepad, project_hub, claude, codex, claude_mcp, coolify, sync_hooks]
 
 
 # --- helpers ----------------------------------------------------------------
