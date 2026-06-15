@@ -14,11 +14,17 @@
   you're done.
 
 ## Browser automation
-- Use `agent-browser` for browser work. Headless for scraping, DOM queries, and
-  static screenshots; headed for real hover/scroll/framework events (GSAP,
-  Webflow IX2), canvas, or anything a live compositor must render. Open headed on
-  the second monitor with `agent-browser open <url> --headed --args
-  "--class=claude-mcp"` (Hyprland pins that class to HDMI-A-1). Close it when done.
+- `agent-browser` is the browser tool. Orient with `agent-browser skills get
+  core --full` (version-matched patterns + full command reference) instead of
+  guessing flags.
+- Headless for scraping, DOM queries, static screenshots; headed for real
+  hover/scroll/framework events (GSAP, Webflow IX2), canvas, or live-compositor
+  rendering. Open headed on the second monitor with `agent-browser open <url>
+  --headed --args "--class=claude-mcp"` (Hyprland pins that class to HDMI-A-1).
+  Close it when done.
+- React work: launch `--enable react-devtools`, then `react tree`, `react
+  inspect <id>`, `react renders start/stop`, `react suspense`. Perf:
+  `agent-browser vitals [url] [--json]` (Core Web Vitals + hydration).
 
 ## Writing style
 - In user-facing prose, docs, and content: no "AI style" writing. In
