@@ -113,10 +113,14 @@ def scan_projects(projects, quiet=False):
     changed = False
     added = []
     updated = []
+    removed = []
+    seen = set()
+    present_roots = []
 
     for root, kind in SCAN_ROOTS:
         if not root.is_dir():
             continue
+        present_roots.append(root)
 
         for child in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
             if not child.is_dir() or child.name.startswith("."):
@@ -126,6 +130,7 @@ def scan_projects(projects, quiet=False):
             if not project_id:
                 continue
 
+            seen.add(project_id)
             path = str(child)
             if project_id in by_id:
                 project = by_id[project_id]
@@ -150,6 +155,16 @@ def scan_projects(projects, quiet=False):
             changed = True
             added.append(project_id)
 
+    for project_id in list(order):
+        if project_id in seen:
+            continue
+        project_path = Path(by_id[project_id].get("path", ""))
+        if project_path.parent in present_roots and not project_path.is_dir():
+            del by_id[project_id]
+            order.remove(project_id)
+            removed.append(project_id)
+            changed = True
+
     if current and not any(project.get("path") == current for project in by_id.values()):
         current_candidate = Path(current)
         for project_id in order:
@@ -172,7 +187,7 @@ def scan_projects(projects, quiet=False):
         refresh_waybar()
 
     if not quiet:
-        print(json.dumps({"added": added, "updated": updated, "current_updated": current_changed}, separators=(",", ":")))
+        print(json.dumps({"added": added, "updated": updated, "removed": removed, "current_updated": current_changed}, separators=(",", ":")))
 
 
 def fallback_label(path):
