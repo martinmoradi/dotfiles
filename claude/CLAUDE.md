@@ -8,9 +8,10 @@
   says so (e.g. infra).
 
 ## Running things
-- Never start dev servers or other long-running processes. Martin runs them
-  himself in a separate terminal; verify against his running server or use
-  one-shot commands (build, test, agent-browser).
+- When you need a long-running process, run your own on a non-default port that
+  you own. Check what's already bound first so you never collide with Martin's
+  services or other agents running in parallel, and clean up your process when
+  you're done.
 
 ## Writing style
 - In user-facing prose, docs, and content: no "AI style" writing. In
