@@ -1,5 +1,5 @@
-# Claude Code rewrites runtime picks (model, effort) into settings.json on every
-# toggle. Strip them on commit via a clean filter so that churn never enters
-# history; the live working file keeps them. Filter commands live in git config
-# (set by `dot deploy claude`, or run scripts/install-git-filters.sh).
+# Claude Code rewrites runtime picks (model, effort, plugin toggles) into
+# settings.json. Strip them on commit via a clean filter so that churn never
+# enters history; the live working file keeps them. Filter commands live in git
+# config (set by `dot deploy claude`, or run scripts/install-git-filters.sh).
 claude/settings.json filter=claude-runtime
