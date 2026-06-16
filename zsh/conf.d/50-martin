@@ -130,6 +130,8 @@ EOF
 }
 
 gc-ai() {
+    setopt localoptions localtraps
+
     local root git_dir git_common_dir
     root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
         echo "gc-ai: not inside a git repository" >&2
@@ -185,7 +187,46 @@ After committing, report the commits created and any remaining uncommitted chang
         "$codex_prompt" >"$log_file" 2>&1 &
 
     local pid=$!
-    local rc
+    local rc interrupted=0 interrupt_rc=130 shell_pgid
+    shell_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+
+    _gc_ai_stop_child() {
+        local signal="${1:-INT}" pgid killed_group=0 current
+        local -a descendants children queue
+        interrupted=1
+        case "$signal" in
+            HUP) interrupt_rc=129 ;;
+            TERM) interrupt_rc=143 ;;
+            *) interrupt_rc=130 ;;
+        esac
+        trap - INT TERM HUP
+
+        kill -0 "$pid" 2>/dev/null || return 0
+
+        pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+        if [[ -n "$pgid" && "$pgid" != "$shell_pgid" ]]; then
+            kill -TERM -- "-$pgid" 2>/dev/null && killed_group=1
+        fi
+
+        if (( ! killed_group )); then
+            queue=("$pid")
+            while (( ${#queue[@]} )); do
+                current="$queue[1]"
+                shift queue
+                children=("${(@f)$(pgrep -P "$current" 2>/dev/null)}")
+                if (( ${#children[@]} )); then
+                    descendants+=("${children[@]}")
+                    queue+=("${children[@]}")
+                fi
+            done
+            (( ${#descendants[@]} )) && kill -TERM "${descendants[@]}" 2>/dev/null
+            kill -TERM "$pid" 2>/dev/null
+        fi
+    }
+    trap '_gc_ai_stop_child INT' INT
+    trap '_gc_ai_stop_child TERM' TERM
+    trap '_gc_ai_stop_child HUP' HUP
+
     if [[ -t 1 ]]; then
         local -a frames
         frames=("   " ".  " ".. " "...")
@@ -203,6 +244,14 @@ After committing, report the commits created and any remaining uncommitted chang
     else
         wait "$pid"
         rc=$?
+    fi
+    trap - INT TERM HUP
+    unfunction _gc_ai_stop_child 2>/dev/null
+
+    if (( interrupted )); then
+        printf "\r%*s\r" 80 ""
+        rm -f "$log_file" "$last_message"
+        return "$interrupt_rc"
     fi
 
     local commit_output
