@@ -17,8 +17,10 @@ import hashlib
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -30,8 +32,17 @@ REPO = Path(__file__).resolve().parent          # resolve() follows the ~/.local
 HOME = Path.home()
 LB = HOME / ".local" / "bin"
 CFG = Path(os.environ.get("XDG_CONFIG_HOME") or (HOME / ".config"))
+STATE = Path(os.environ.get("XDG_STATE_HOME") or (HOME / ".local" / "state")) / "dotfiles"
+CACHE = Path(os.environ.get("XDG_CACHE_HOME") or (HOME / ".cache")) / "dotfiles"
 CLAUDE = HOME / ".claude"
 CODEX = HOME / ".codex"
+
+CODEX_GUI_PACKAGE = "codex-app-unofficial"
+CODEX_GUI_AUR_URL = f"https://aur.archlinux.org/{CODEX_GUI_PACKAGE}.git"
+CODEX_GUI_PATCH_BRANCH = "main"
+CODEX_GUI_PATCH_REPO_URL = "https://gist.github.com/Yubo-Cao/8b21ac616db0199f98676b41e49d3a8e.git"
+CODEX_GUI_PATCH_DIR = STATE / "codex-gui-patch"
+CODEX_GUI_PATCH_FILE = CODEX_GUI_PATCH_DIR / "codex-app-unofficial.patch"
 
 
 # --- data model -------------------------------------------------------------
@@ -45,6 +56,7 @@ class Kind(Enum):
     LEGACY_RM = "legacy_rm"     # remove a stale file (drift = still present)
     ACTION = "action"           # opaque post-action; can only run, never diffed
     TOGGLE = "toggle"           # interactive live-state switch (TUI only; deploy skips)
+    BUTTON = "button"           # interactive action button with custom status
 
 
 # status states
@@ -81,6 +93,8 @@ class Step:
     interactive_only: bool = False         # shown/runnable in TUI, skipped by deploy
     detect: Optional[Callable[[], str]] = None     # TOGGLE: returns current mode key
     transitions: Optional[dict] = None     # TOGGLE: mode -> {desc, action, argv}
+    status_fn: Optional[Callable[[], "Status"]] = None  # BUTTON: custom status
+    display_fn: Optional[Callable[[], str]] = None       # BUTTON: dynamic label
 
 
 @dataclass
@@ -127,6 +141,254 @@ def detect_waybar_mode() -> str:
     if "workspace" in on_scroll:
         return "vanilla"
     return "unknown"
+
+
+_codex_gui_auto_fetch_status = False
+_codex_gui_patch_status: Optional[Status] = None
+
+
+def clear_runtime_status() -> None:
+    global _codex_gui_patch_status
+    _codex_gui_patch_status = None
+
+
+def run_checked(argv: List[str], cwd: Optional[Path] = None) -> None:
+    where = f"  ({cwd})" if cwd else ""
+    print(f"+ {shlex.join(str(a) for a in argv)}{where}")
+    rc = subprocess.run([str(a) for a in argv], cwd=cwd, check=False).returncode
+    if rc != 0:
+        raise SystemExit(rc)
+
+
+def run_text(argv: List[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+    return subprocess.run([str(a) for a in argv], cwd=cwd, check=False, text=True, capture_output=True)
+
+
+def command_error(result: subprocess.CompletedProcess) -> str:
+    lines = (result.stderr or result.stdout or "").strip().splitlines()
+    return lines[-1] if lines else f"rc={result.returncode}"
+
+
+def short_ref(ref: str) -> str:
+    return ref[:8] if ref else "unknown"
+
+
+def codex_gui_patch_repo_present() -> bool:
+    return (CODEX_GUI_PATCH_DIR / ".git").exists()
+
+
+def codex_gui_ensure_patch_repo(auto_fetch: bool) -> tuple[bool, str]:
+    if shutil.which("git") is None:
+        return False, "command not found: git"
+
+    if not codex_gui_patch_repo_present():
+        if CODEX_GUI_PATCH_DIR.exists():
+            return False, f"path exists but is not a git repo: {CODEX_GUI_PATCH_DIR}"
+        if not auto_fetch:
+            return False, "patch source not cloned"
+        CODEX_GUI_PATCH_DIR.parent.mkdir(parents=True, exist_ok=True)
+        result = run_text(["git", "clone", CODEX_GUI_PATCH_REPO_URL, str(CODEX_GUI_PATCH_DIR)])
+        if result.returncode != 0:
+            return False, f"clone failed: {command_error(result)}"
+        return True, ""
+
+    if auto_fetch:
+        result = run_text(["git", "fetch", "--prune", "origin", CODEX_GUI_PATCH_BRANCH], CODEX_GUI_PATCH_DIR)
+        if result.returncode != 0:
+            return False, f"fetch failed: {command_error(result)}"
+
+    return True, ""
+
+
+def codex_gui_git_stdout(args: List[str]) -> tuple[bool, str]:
+    result = run_text(["git", *args], CODEX_GUI_PATCH_DIR)
+    if result.returncode != 0:
+        return False, command_error(result)
+    return True, result.stdout.strip()
+
+
+def codex_gui_patch_refs() -> tuple[str, str, int, int]:
+    ok, local = codex_gui_git_stdout(["rev-parse", "HEAD"])
+    if not ok:
+        raise RuntimeError(local)
+    ok, remote = codex_gui_git_stdout(["rev-parse", f"origin/{CODEX_GUI_PATCH_BRANCH}"])
+    if not ok:
+        remote = local
+    result = run_text(
+        ["git", "rev-list", "--left-right", "--count", f"HEAD...origin/{CODEX_GUI_PATCH_BRANCH}"],
+        CODEX_GUI_PATCH_DIR,
+    )
+    if result.returncode != 0:
+        return local, remote, 0, 0
+    parts = result.stdout.split()
+    ahead, behind = (int(parts[0]), int(parts[1])) if len(parts) >= 2 else (0, 0)
+    return local, remote, ahead, behind
+
+
+def codex_gui_patch_status(auto_fetch: Optional[bool] = None) -> Status:
+    global _codex_gui_patch_status
+    if auto_fetch is None:
+        auto_fetch = _codex_gui_auto_fetch_status
+    if _codex_gui_patch_status is not None:
+        return _codex_gui_patch_status
+
+    ok, reason = codex_gui_ensure_patch_repo(auto_fetch=auto_fetch)
+    if not ok:
+        state = NEW if reason == "patch source not cloned" else SKIPPED
+        status = Status(state, reason)
+        if auto_fetch:
+            _codex_gui_patch_status = status
+        return status
+
+    if not CODEX_GUI_PATCH_FILE.exists():
+        status = Status(SKIPPED, "missing codex-app-unofficial.patch")
+        if auto_fetch:
+            _codex_gui_patch_status = status
+        return status
+
+    dirty = run_text(["git", "status", "--porcelain"], CODEX_GUI_PATCH_DIR)
+    if dirty.returncode == 0 and dirty.stdout.strip():
+        status = Status(DRIFTED, f"local edits in {CODEX_GUI_PATCH_DIR}")
+        if auto_fetch:
+            _codex_gui_patch_status = status
+        return status
+
+    try:
+        local, remote, ahead, behind = codex_gui_patch_refs()
+    except RuntimeError as exc:
+        status = Status(SKIPPED, str(exc))
+        if auto_fetch:
+            _codex_gui_patch_status = status
+        return status
+
+    if ahead and behind:
+        status = Status(DRIFTED, f"diverged +{ahead}/-{behind}: {short_ref(local)} vs {short_ref(remote)}")
+    elif behind:
+        status = Status(DRIFTED, f"behind {behind}: {short_ref(local)} -> {short_ref(remote)}")
+    elif ahead:
+        status = Status(DRIFTED, f"local ahead {ahead}: {short_ref(local)}")
+    else:
+        status = Status(IN_SYNC, short_ref(local))
+
+    if auto_fetch:
+        _codex_gui_patch_status = status
+    return status
+
+
+def codex_gui_patch_display() -> str:
+    status = codex_gui_patch_status()
+    if status.state == NEW:
+        return "clone patch source"
+    if status.state == DRIFTED:
+        return "pull patch source"
+    if status.state == SKIPPED:
+        return "check patch source"
+    return "fetch patch source"
+
+
+def codex_gui_patch_rev() -> str:
+    if not codex_gui_patch_repo_present():
+        return "not cloned"
+    ok, local = codex_gui_git_stdout(["rev-parse", "--short=8", "HEAD"])
+    return local if ok else "unknown"
+
+
+def codex_gui_pull_patch_source() -> None:
+    clear_runtime_status()
+    if shutil.which("git") is None:
+        raise SystemExit("git is required")
+
+    if not codex_gui_patch_repo_present():
+        if CODEX_GUI_PATCH_DIR.exists():
+            raise SystemExit(f"{CODEX_GUI_PATCH_DIR} exists but is not a git repo")
+        CODEX_GUI_PATCH_DIR.parent.mkdir(parents=True, exist_ok=True)
+        run_checked(["git", "clone", CODEX_GUI_PATCH_REPO_URL, str(CODEX_GUI_PATCH_DIR)])
+    else:
+        dirty = run_text(["git", "status", "--porcelain"], CODEX_GUI_PATCH_DIR)
+        if dirty.returncode == 0 and dirty.stdout.strip():
+            print(f"Patch source has local edits: {CODEX_GUI_PATCH_DIR}")
+            print(dirty.stdout.rstrip())
+            raise SystemExit(1)
+        run_checked(["git", "fetch", "--prune", "origin", CODEX_GUI_PATCH_BRANCH], CODEX_GUI_PATCH_DIR)
+        run_checked(["git", "pull", "--ff-only", "origin", CODEX_GUI_PATCH_BRANCH], CODEX_GUI_PATCH_DIR)
+
+    clear_runtime_status()
+    status = codex_gui_patch_status(auto_fetch=False)
+    print(f"patch source: {state_label_plain(status)}")
+    print(f"path: {CODEX_GUI_PATCH_DIR}")
+
+
+def codex_gui_patch_diff() -> None:
+    clear_runtime_status()
+    ok, reason = codex_gui_ensure_patch_repo(auto_fetch=True)
+    if not ok:
+        raise SystemExit(reason)
+
+    status = codex_gui_patch_status(auto_fetch=False)
+    print(f"patch source: {state_label_plain(status)}")
+    print(f"path: {CODEX_GUI_PATCH_DIR}\n")
+
+    local, remote, _ahead, behind = codex_gui_patch_refs()
+    if local == remote:
+        print("Patch source is in sync with origin/main.")
+        return
+
+    if behind:
+        run_checked(["git", "log", "--oneline", f"HEAD..origin/{CODEX_GUI_PATCH_BRANCH}"], CODEX_GUI_PATCH_DIR)
+        print()
+    run_checked(["git", "diff", "--stat", f"HEAD..origin/{CODEX_GUI_PATCH_BRANCH}"], CODEX_GUI_PATCH_DIR)
+    print()
+    run_checked(["git", "diff", f"HEAD..origin/{CODEX_GUI_PATCH_BRANCH}"], CODEX_GUI_PATCH_DIR)
+
+
+def codex_gui_installed_version() -> tuple[bool, str]:
+    if shutil.which("pacman") is None:
+        return False, "pacman not found"
+    result = run_text(["pacman", "-Q", CODEX_GUI_PACKAGE])
+    if result.returncode != 0:
+        return False, "not installed"
+    return True, result.stdout.strip()
+
+
+def codex_gui_install_status() -> Status:
+    patch_status = codex_gui_patch_status()
+    if patch_status.state in (SKIPPED, NEW):
+        return Status(patch_status.state, f"patch source: {patch_status.detail}")
+
+    installed, detail = codex_gui_installed_version()
+    if not installed:
+        return Status(NEW, f"{detail}; patch {codex_gui_patch_rev()}")
+    return Status(ACTION_ONLY, f"{detail}; patch {codex_gui_patch_rev()}")
+
+
+def codex_gui_install_patched() -> None:
+    clear_runtime_status()
+    ok, reason = codex_gui_ensure_patch_repo(auto_fetch=True)
+    if not ok:
+        raise SystemExit(reason)
+    patch_status = codex_gui_patch_status(auto_fetch=False)
+    if patch_status.state == DRIFTED:
+        print(f"Using local patch source even though it is {patch_status.detail}.")
+        print("Run `dot codex pull` first if you want the latest gist revision.\n")
+
+    for cmd in ("git", "makepkg"):
+        if shutil.which(cmd) is None:
+            raise SystemExit(f"{cmd} is required")
+    if not CODEX_GUI_PATCH_FILE.exists():
+        raise SystemExit(f"missing patch file: {CODEX_GUI_PATCH_FILE}")
+
+    CACHE.mkdir(parents=True, exist_ok=True)
+    build_root = Path(tempfile.mkdtemp(prefix="codex-gui-", dir=CACHE))
+    aur_dir = build_root / CODEX_GUI_PACKAGE
+    try:
+        run_checked(["git", "clone", "--depth=1", CODEX_GUI_AUR_URL, str(aur_dir)])
+        run_checked(["git", "apply", "--whitespace=nowarn", str(CODEX_GUI_PATCH_FILE)], aur_dir)
+        run_checked(["makepkg", "-si"], aur_dir)
+    except SystemExit:
+        print(f"\nBuild workspace kept for inspection: {build_root}")
+        raise
+    shutil.rmtree(build_root, ignore_errors=True)
+    print("Patched Codex GUI install complete.")
 
 
 # --- registry ---------------------------------------------------------------
@@ -238,21 +500,26 @@ def build_registry() -> List[Module]:
         # to the repo automatically. Codex shares CLAUDE.md via its own module.
         Step(Kind.SYMLINK, "CLAUDE.md", REPO / "claude" / "CLAUDE.md", CLAUDE / "CLAUDE.md"),
         Step(Kind.SYMLINK, "settings.json", REPO / "claude" / "settings.json", CLAUDE / "settings.json"),
-        # settings.json is symlinked + tracked, but Claude Code rewrites model/
-        # effort into it constantly. A git clean filter strips those keys on
-        # stage; register it here so a fresh clone strips them too.
+        # settings.json is symlinked + tracked, but Claude Code rewrites model,
+        # effort, and plugin toggles into it constantly. A git clean filter
+        # strips those keys on stage; register it here so a fresh clone strips
+        # them too.
         Step(Kind.ACTION, "register settings clean filter",
              run_argv=[str(REPO / "scripts/install-git-filters.sh")],
-             dry_note="git config filter.claude-runtime.clean/smudge (strip model/effort)",
+             dry_note="git config filter.claude-runtime.clean/smudge (strip model/effort/plugins)",
              guard=Guard(command="jq")),
-    ])
-
-    codex = Module("codex", "Codex global instructions (AGENTS.md)", [
-        Step(Kind.SYMLINK, "AGENTS.md", REPO / "codex" / "AGENTS.md", CODEX / "AGENTS.md"),
-    ])
-
-    claude_mcp = Module("claude-mcp", "Claude-in-Chrome MCP capture launcher", [
         Step(Kind.COPY, "claude-mcp-chrome", REPO / "scripts/claude-mcp-chrome.sh", LB / "claude-mcp-chrome", executable=True),
+    ])
+
+    codex = Module("codex", "Codex instructions + patched GUI workflow", [
+        Step(Kind.SYMLINK, "AGENTS.md", REPO / "codex" / "AGENTS.md", CODEX / "AGENTS.md"),
+        Step(Kind.BUTTON, "patch source", interactive_only=True,
+             status_fn=codex_gui_patch_status,
+             display_fn=codex_gui_patch_display,
+             run=codex_gui_pull_patch_source),
+        Step(Kind.BUTTON, "patch + install Codex GUI", interactive_only=True,
+             status_fn=codex_gui_install_status,
+             run=codex_gui_install_patched),
     ])
 
     coolify = Module("coolify-notify", "Staging deploy notifications (user timer)", [
@@ -277,7 +544,7 @@ def build_registry() -> List[Module]:
 
     # waybar first so its tab sits right after "all". Deploy order is unaffected
     # in practice: the patch only edits JSON and never restarts waybar.
-    return [waybar, hypr, kitty, zsh, vscode, sidepad, project_hub, claude, codex, claude_mcp, coolify, sync_hooks]
+    return [waybar, hypr, kitty, zsh, vscode, sidepad, project_hub, claude, codex, coolify, sync_hooks]
 
 
 # --- helpers ----------------------------------------------------------------
@@ -344,6 +611,10 @@ def step_status(step: Step) -> Status:
         return Status(SKIPPED, reason)
 
     k = step.kind
+    if k is Kind.BUTTON:
+        if step.status_fn is not None:
+            return step.status_fn()
+        return Status(ACTION_ONLY, "press enter to run")
     if k is Kind.ACTION:
         return Status(ACTION_ONLY, "runs on deploy")
     if k is Kind.TOGGLE:
@@ -398,6 +669,8 @@ def step_status(step: Step) -> Status:
 
 def step_display(step: Step) -> str:
     """Label to show. TOGGLE shows the action for the *current* live mode."""
+    if step.display_fn is not None:
+        return step.display_fn()
     if step.kind is Kind.TOGGLE:
         mode = step.detect()
         trans = step.transitions.get(mode) or step.transitions.get("unknown") or {}
@@ -591,6 +864,18 @@ def run_toggle(step: Step) -> None:
     print("done." if rc == 0 else f"failed (rc={rc})")
 
 
+def run_button(step: Step) -> None:
+    """Run an interactive BUTTON step."""
+    print(f"{step.label}:")
+    if step.run is not None:
+        step.run()
+        return
+    if step.run_argv is not None:
+        run_checked(step.run_argv)
+        return
+    print("nothing to do")
+
+
 def cmd_status(reg: List[Module], module=None, verbose=False) -> None:
     modules = select_modules(reg, [module] if module else None)
     show_steps = verbose or module is not None
@@ -634,6 +919,8 @@ def cmd_diff(reg: List[Module], module=None) -> None:
                       f"-> flip would: {trans.get('action', '')}\n")
             elif step.kind is Kind.ACTION:
                 print(f"# {m.name} / {step.label}: {step.dry_note}\n")
+            elif step.kind is Kind.BUTTON:
+                print(f"# {m.name} / {step.label}: {state_label_plain(step_status(step))}\n")
 
 
 def cmd_snapshot(reg: List[Module]) -> None:
@@ -663,6 +950,31 @@ def cmd_snapshot(reg: List[Module]) -> None:
 def cmd_sync(args) -> None:
     script = REPO / "scripts" / "dotfiles-sync.sh"
     os.execv(str(script), [str(script)] + list(args))
+
+
+def cmd_codex(action: str) -> None:
+    if action == "status":
+        clear_runtime_status()
+        patch = codex_gui_patch_status(auto_fetch=True)
+        install = codex_gui_install_status()
+        print("Codex")
+        print(f"  patch source: {state_label_plain(patch)}")
+        print(f"  install:      {state_label_plain(install)}")
+        print(f"  local path:   {CODEX_GUI_PATCH_DIR}")
+        return
+    if action == "pull":
+        codex_gui_pull_patch_source()
+        return
+    if action == "diff":
+        codex_gui_patch_diff()
+        return
+    if action == "install":
+        codex_gui_install_patched()
+        return
+    if action == "path":
+        print(CODEX_GUI_PATCH_DIR)
+        return
+    raise SystemExit(f"unknown codex action: {action}")
 
 
 # --- TUI --------------------------------------------------------------------
@@ -705,8 +1017,15 @@ class App:
         return self.colors.get(state, 0)
 
     def refresh_status(self):
-        self.mod_status = {m.name: module_status(m) for m in self.reg}
-        self.step_status = {m.name: [step_status(s) for s in m.steps] for m in self.reg}
+        global _codex_gui_auto_fetch_status
+        clear_runtime_status()
+        old_auto_fetch = _codex_gui_auto_fetch_status
+        _codex_gui_auto_fetch_status = True
+        try:
+            self.mod_status = {m.name: module_status(m) for m in self.reg}
+            self.step_status = {m.name: [step_status(s) for s in m.steps] for m in self.reg}
+        finally:
+            _codex_gui_auto_fetch_status = old_auto_fetch
 
     # current-context helpers -------------------------------------------------
     def is_all(self):
@@ -783,14 +1102,15 @@ class App:
                 break
             label, status, step = rows[ri]
             is_toggle = step is not None and step.kind is Kind.TOGGLE
+            is_button = step is not None and step.kind is Kind.BUTTON
             row_attr = curses.A_REVERSE if ri == self.cursor else 0
-            if is_toggle:
-                # An action button, not a checkbox: arrow + the flip, with the
-                # current live mode spelled out so it can't read as drift state.
+            if is_toggle or is_button:
+                # An action button, not a checkbox: arrow + action text, with
+                # status on the right so it cannot read as a deploy checkbox.
                 self.addnstr(3 + vi, 0, f" →  {label}".ljust(w - 1), row_attr)
-                tail = f"now: {status.detail}"
+                tail = f"now: {status.detail}" if is_toggle else state_label_plain(status)
                 self.addnstr(3 + vi, max(0, w - len(tail) - 2), tail,
-                             row_attr or self.attr(ACTION_ONLY))
+                             row_attr or self.attr(status.state))
             else:
                 box = "[x]" if self.is_checked(ri) else "[ ]"
                 mark = self.MARK.get(status.state, "?")
@@ -802,8 +1122,8 @@ class App:
                              row_attr or self.attr(status.state))
 
         cur = rows[self.cursor] if self.cursor < len(rows) else None
-        on_toggle = cur is not None and cur[2] is not None and cur[2].kind is Kind.TOGGLE
-        enter = "enter switch mode" if on_toggle else f"enter deploy ({self.count_selected()})"
+        on_action = cur is not None and cur[2] is not None and cur[2].kind in (Kind.TOGGLE, Kind.BUTTON)
+        enter = "enter run action" if on_action else f"enter deploy ({self.count_selected()})"
         self.addnstr(h - 1, 0,
                      f" ↑↓ move  space toggle  ←→ context  a all/none  "
                      f"{enter}  r refresh  q quit",
@@ -832,8 +1152,9 @@ class App:
         elif k in (curses.KEY_ENTER, 10, 13):
             if not self.is_all():
                 m = self.cur_module()
-                if self.cursor < len(m.steps) and m.steps[self.cursor].kind is Kind.TOGGLE:
-                    self.request = ("toggle", m.name, self.cursor)
+                if self.cursor < len(m.steps) and m.steps[self.cursor].kind in (Kind.TOGGLE, Kind.BUTTON):
+                    request = "toggle" if m.steps[self.cursor].kind is Kind.TOGGLE else "button"
+                    self.request = (request, m.name, self.cursor)
                     return False
             self._build_request()
             return False
@@ -885,6 +1206,10 @@ def run_tui(reg: List[Module]) -> None:
         _, modname, idx = request
         module = next(m for m in reg if m.name == modname)
         run_toggle(module.steps[idx])
+    elif request[0] == "button":
+        _, modname, idx = request
+        module = next(m for m in reg if m.name == modname)
+        run_button(module.steps[idx])
 
 
 # --- entrypoint -------------------------------------------------------------
@@ -909,6 +1234,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync = sub.add_parser("sync", help="snapshot + commit + push (dotfiles-sync)")
     p_sync.add_argument("args", nargs=argparse.REMAINDER, help="passed to dotfiles-sync")
 
+    p_codex = sub.add_parser("codex", help="manage Codex patch source and patched GUI builds")
+    p_codex.add_argument(
+        "action",
+        nargs="?",
+        default="status",
+        choices=("status", "pull", "diff", "install", "path"),
+        help="status, pull gist updates, show pending diff, or patch + install",
+    )
+
     return parser
 
 
@@ -928,6 +1262,8 @@ def main() -> None:
         cmd_snapshot(reg)
     elif args.command == "sync":
         cmd_sync(args.args)
+    elif args.command == "codex":
+        cmd_codex(args.action)
 
 
 if __name__ == "__main__":
