@@ -86,7 +86,80 @@ alias perso='cd ~/src/perso'
 # --- Functions ---
 
 gmain() {
-    git checkout main && git pull
+    git switch main && git pull --ff-only
+}
+
+ghelp() {
+    cat <<'EOF'
+Git aliases
+
+  g        git
+  gs       git status --short --branch
+  gd       git diff
+  gds      git diff --staged
+  ga       git add
+  gc       git commit
+  gcm      git commit -m
+  gp       git push
+  gpl      git pull --ff-only
+  gf       git fetch --all --prune
+  gprune   git fetch --all --prune
+  gfp      git fetch --all --prune && git pull --ff-only
+  gl       git log --oneline --decorate --graph
+  gsw      git switch
+  gnew     git switch -c
+  gm       git switch main
+  gmain    git switch main && git pull --ff-only
+
+Worktrees
+
+  gw        git worktree
+  gwlist    git worktree list
+  gwadd     git worktree add
+  gwremove  git worktree remove
+  gwprune   git worktree prune
+  gwcd      pick a worktree with fzf and cd into it
+
+Stash
+
+  stash     git stash
+  pop       git stash pop
+  stashes   git stash list
+EOF
+}
+
+gwcd() {
+    git rev-parse --git-common-dir >/dev/null 2>&1 || {
+        echo "gwcd: not inside a git repository" >&2
+        return 1
+    }
+
+    command -v fzf >/dev/null 2>&1 || {
+        git worktree list
+        echo "gwcd: fzf is required to pick a worktree" >&2
+        return 1
+    }
+
+    local selected
+    selected="$(
+        git worktree list --porcelain |
+            awk '
+                /^worktree / { path = substr($0, 10); branch = ""; head = ""; next }
+                /^HEAD / { head = substr($0, 6, 7); next }
+                /^branch / { branch = substr($0, 8); sub("^refs/heads/", "", branch); next }
+                /^$/ {
+                    if (path != "") print path "\t" branch "\t" head
+                    path = ""; branch = ""; head = ""
+                }
+                END {
+                    if (path != "") print path "\t" branch "\t" head
+                }
+            ' |
+            fzf --prompt='worktree> ' --query="$*" --with-nth=1,2,3
+    )" || return
+
+    [[ -n "$selected" ]] || return
+    cd -- "${selected%%$'\t'*}"
 }
 
 p() {
