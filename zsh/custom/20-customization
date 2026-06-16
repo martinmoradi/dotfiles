@@ -41,5 +41,8 @@ HISTSIZE=10000
 SAVEHIST=10000
 setopt appendhistory
 
+# mise - per-directory tool versions (auto-switches Node/etc. via mise.toml)
+command -v mise &>/dev/null && eval "$(mise activate zsh)"
+
 # Prompt - oh-my-posh with your zen theme
 eval "$(oh-my-posh init zsh --config $HOME/.config/ohmyposh/zen.toml)"
