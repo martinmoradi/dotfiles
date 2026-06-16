@@ -16,11 +16,14 @@ import difflib
 import hashlib
 import json
 import os
+import queue
+import re
 import shutil
 import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -43,6 +46,7 @@ CODEX_GUI_PATCH_BRANCH = "main"
 CODEX_GUI_PATCH_REPO_URL = "https://gist.github.com/Yubo-Cao/8b21ac616db0199f98676b41e49d3a8e.git"
 CODEX_GUI_PATCH_DIR = STATE / "codex-gui-patch"
 CODEX_GUI_PATCH_FILE = CODEX_GUI_PATCH_DIR / "codex-app-unofficial.patch"
+CODEX_GUI_PATCH_PAYLOAD = "patch-settings-overlap.mjs"
 
 
 # --- data model -------------------------------------------------------------
@@ -95,6 +99,8 @@ class Step:
     transitions: Optional[dict] = None     # TOGGLE: mode -> {desc, action, argv}
     status_fn: Optional[Callable[[], "Status"]] = None  # BUTTON: custom status
     display_fn: Optional[Callable[[], str]] = None       # BUTTON: dynamic label
+    tui_background: bool = False         # BUTTON: run inside the TUI and refresh when done
+    tui_run: Optional[Callable[[], None]] = None  # BUTTON: TUI-safe callable
 
 
 @dataclass
@@ -108,6 +114,13 @@ class Module:
 class Status:
     state: str
     detail: str = ""
+
+
+@dataclass
+class BackgroundJob:
+    label: str
+    thread: threading.Thread
+    results: queue.Queue
 
 
 # --- ACTION callables -------------------------------------------------------
@@ -167,6 +180,12 @@ def run_text(argv: List[str], cwd: Optional[Path] = None) -> subprocess.Complete
 def command_error(result: subprocess.CompletedProcess) -> str:
     lines = (result.stderr or result.stdout or "").strip().splitlines()
     return lines[-1] if lines else f"rc={result.returncode}"
+
+
+def run_checked_quiet(argv: List[str], cwd: Optional[Path] = None) -> None:
+    result = run_text(argv, cwd)
+    if result.returncode != 0:
+        raise RuntimeError(f"{shlex.join(str(a) for a in argv)} failed: {command_error(result)}")
 
 
 def short_ref(ref: str) -> str:
@@ -293,29 +312,37 @@ def codex_gui_patch_rev() -> str:
     return local if ok else "unknown"
 
 
-def codex_gui_pull_patch_source() -> None:
+def codex_gui_pull_patch_source(quiet: bool = False) -> None:
     clear_runtime_status()
     if shutil.which("git") is None:
         raise SystemExit("git is required")
 
+    run = run_checked_quiet if quiet else run_checked
     if not codex_gui_patch_repo_present():
         if CODEX_GUI_PATCH_DIR.exists():
             raise SystemExit(f"{CODEX_GUI_PATCH_DIR} exists but is not a git repo")
         CODEX_GUI_PATCH_DIR.parent.mkdir(parents=True, exist_ok=True)
-        run_checked(["git", "clone", CODEX_GUI_PATCH_REPO_URL, str(CODEX_GUI_PATCH_DIR)])
+        run(["git", "clone", CODEX_GUI_PATCH_REPO_URL, str(CODEX_GUI_PATCH_DIR)])
     else:
         dirty = run_text(["git", "status", "--porcelain"], CODEX_GUI_PATCH_DIR)
         if dirty.returncode == 0 and dirty.stdout.strip():
+            if quiet:
+                raise RuntimeError(f"patch source has local edits: {CODEX_GUI_PATCH_DIR}")
             print(f"Patch source has local edits: {CODEX_GUI_PATCH_DIR}")
             print(dirty.stdout.rstrip())
             raise SystemExit(1)
-        run_checked(["git", "fetch", "--prune", "origin", CODEX_GUI_PATCH_BRANCH], CODEX_GUI_PATCH_DIR)
-        run_checked(["git", "pull", "--ff-only", "origin", CODEX_GUI_PATCH_BRANCH], CODEX_GUI_PATCH_DIR)
+        run(["git", "fetch", "--prune", "origin", CODEX_GUI_PATCH_BRANCH], CODEX_GUI_PATCH_DIR)
+        run(["git", "pull", "--ff-only", "origin", CODEX_GUI_PATCH_BRANCH], CODEX_GUI_PATCH_DIR)
 
     clear_runtime_status()
     status = codex_gui_patch_status(auto_fetch=False)
-    print(f"patch source: {state_label_plain(status)}")
-    print(f"path: {CODEX_GUI_PATCH_DIR}")
+    if not quiet:
+        print(f"patch source: {state_label_plain(status)}")
+        print(f"path: {CODEX_GUI_PATCH_DIR}")
+
+
+def codex_gui_pull_patch_source_quiet() -> None:
+    codex_gui_pull_patch_source(quiet=True)
 
 
 def codex_gui_patch_diff() -> None:
@@ -339,6 +366,126 @@ def codex_gui_patch_diff() -> None:
     run_checked(["git", "diff", "--stat", f"HEAD..origin/{CODEX_GUI_PATCH_BRANCH}"], CODEX_GUI_PATCH_DIR)
     print()
     run_checked(["git", "diff", f"HEAD..origin/{CODEX_GUI_PATCH_BRANCH}"], CODEX_GUI_PATCH_DIR)
+
+
+def codex_gui_patch_file_from_diff(patch_path: Path, rel_path: str) -> str:
+    current_file = False
+    in_hunk = False
+    out: list[str] = []
+    diff_header = f"diff --git a/{rel_path} b/{rel_path}"
+
+    for line in patch_path.read_text().splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            if current_file:
+                break
+            current_file = line.rstrip("\n") == diff_header
+            in_hunk = False
+            continue
+        if not current_file:
+            continue
+        if line.startswith("@@"):
+            in_hunk = True
+            continue
+        if not in_hunk or line.startswith("\\"):
+            continue
+        if line.startswith("+"):
+            out.append(line[1:])
+        elif line.startswith(" "):
+            out.append(line[1:])
+
+    if not out:
+        raise RuntimeError(f"could not extract {rel_path} from {patch_path}")
+    return "".join(out)
+
+
+def pkgbuild_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def codex_gui_ensure_pkgbuild_array_value(text: str, name: str, value: str) -> str:
+    quoted = pkgbuild_quote(value)
+    multiline = re.search(rf"(?ms)^(?P<head>{name}=\(\n)(?P<body>.*?)(?P<tail>^\))", text)
+    if multiline:
+        if value in multiline.group("body"):
+            return text
+        return text[:multiline.end("body")] + f"  {quoted}\n" + text[multiline.end("body"):]
+
+    singleline = re.search(rf"(?m)^(?P<head>{name}=\()(?P<body>[^\n]*)(?P<tail>\))", text)
+    if singleline:
+        if value in singleline.group("body"):
+            return text
+        body = singleline.group("body").rstrip()
+        return text[:singleline.start("body")] + body + (" " if body else "") + quoted + text[singleline.end("body"):]
+
+    raise RuntimeError(f"could not find {name}=() in PKGBUILD")
+
+
+def codex_gui_ensure_pkgbuild_makedepend(text: str) -> str:
+    if re.search(r"(?m)^makedepends=\(", text):
+        return codex_gui_ensure_pkgbuild_array_value(text, "makedepends", "asar")
+
+    line = "makedepends=('asar')\n"
+    license_line = re.search(r"(?m)^license=.*\n", text)
+    if license_line:
+        return text[:license_line.end()] + line + text[license_line.end():]
+
+    depends_line = re.search(r"(?m)^depends=.*\n", text)
+    if depends_line:
+        return text[:depends_line.start()] + line + text[depends_line.start():]
+
+    raise RuntimeError("could not place makedepends in PKGBUILD")
+
+
+def codex_gui_ensure_pkgbuild_prepare(text: str) -> str:
+    command = f'  node "${{srcdir}}/{CODEX_GUI_PATCH_PAYLOAD}" "${{srcdir}}/linux-unpacked/resources/app.asar"\n'
+    if command.strip() in text:
+        return text
+
+    prepare_fn = re.search(r"(?m)^prepare\(\)\s*\{\n", text)
+    if prepare_fn:
+        return text[:prepare_fn.end()] + command + text[prepare_fn.end():]
+
+    package_fn = re.search(r"(?m)^package\(\)\s*\{", text)
+    if not package_fn:
+        raise RuntimeError("could not find package() in PKGBUILD")
+
+    block = f"prepare() {{\n{command}}}\n\n"
+    return text[:package_fn.start()] + block + text[package_fn.start():]
+
+
+def codex_gui_apply_patch_adaptively(aur_dir: Path) -> None:
+    payload = codex_gui_patch_file_from_diff(CODEX_GUI_PATCH_FILE, CODEX_GUI_PATCH_PAYLOAD)
+    payload_path = aur_dir / CODEX_GUI_PATCH_PAYLOAD
+    payload_path.write_text(payload)
+    payload_hash = hashlib.sha256(payload.encode()).hexdigest()
+
+    pkgbuild_path = aur_dir / "PKGBUILD"
+    pkgbuild = pkgbuild_path.read_text()
+    pkgbuild = codex_gui_ensure_pkgbuild_makedepend(pkgbuild)
+    pkgbuild = codex_gui_ensure_pkgbuild_array_value(pkgbuild, "source", CODEX_GUI_PATCH_PAYLOAD)
+    pkgbuild = codex_gui_ensure_pkgbuild_array_value(pkgbuild, "sha256sums", payload_hash)
+    pkgbuild = codex_gui_ensure_pkgbuild_prepare(pkgbuild)
+    pkgbuild_path.write_text(pkgbuild)
+
+    srcinfo = run_text(["makepkg", "--printsrcinfo"], aur_dir)
+    if srcinfo.returncode != 0:
+        raise RuntimeError(f"makepkg --printsrcinfo failed: {command_error(srcinfo)}")
+    (aur_dir / ".SRCINFO").write_text(srcinfo.stdout)
+
+    print(f"Adaptive patch added {CODEX_GUI_PATCH_PAYLOAD} ({short_ref(payload_hash)}) to the current AUR package.")
+
+
+def codex_gui_apply_patch(aur_dir: Path) -> None:
+    check = run_text(["git", "apply", "--check", "--whitespace=nowarn", str(CODEX_GUI_PATCH_FILE)], aur_dir)
+    if check.returncode == 0:
+        run_checked(["git", "apply", "--whitespace=nowarn", str(CODEX_GUI_PATCH_FILE)], aur_dir)
+        return
+
+    print("Exact gist patch does not match the current AUR package.")
+    print(f"git apply --check: {command_error(check)}")
+    print("Warning: adapting the pulled gist patch to current AUR metadata.")
+    print("If upstream Codex internals changed, the package build may still fail; reinstalling the unpatched package is the fallback.")
+    codex_gui_apply_patch_adaptively(aur_dir)
 
 
 def codex_gui_installed_version() -> tuple[bool, str]:
@@ -382,7 +529,7 @@ def codex_gui_install_patched() -> None:
     aur_dir = build_root / CODEX_GUI_PACKAGE
     try:
         run_checked(["git", "clone", "--depth=1", CODEX_GUI_AUR_URL, str(aur_dir)])
-        run_checked(["git", "apply", "--whitespace=nowarn", str(CODEX_GUI_PATCH_FILE)], aur_dir)
+        codex_gui_apply_patch(aur_dir)
         run_checked(["makepkg", "-si"], aur_dir)
     except SystemExit:
         print(f"\nBuild workspace kept for inspection: {build_root}")
@@ -516,7 +663,9 @@ def build_registry() -> List[Module]:
         Step(Kind.BUTTON, "patch source", interactive_only=True,
              status_fn=codex_gui_patch_status,
              display_fn=codex_gui_patch_display,
-             run=codex_gui_pull_patch_source),
+             run=codex_gui_pull_patch_source,
+             tui_background=True,
+             tui_run=codex_gui_pull_patch_source_quiet),
         Step(Kind.BUTTON, "patch + install Codex GUI", interactive_only=True,
              status_fn=codex_gui_install_status,
              run=codex_gui_install_patched),
@@ -997,6 +1146,8 @@ class App:
             for m in reg
         }
         self.request = None
+        self.background_jobs = {}
+        self.message = ""
         self.refresh_status()
         self._init_colors()
 
@@ -1017,6 +1168,9 @@ class App:
         return self.colors.get(state, 0)
 
     def refresh_status(self):
+        if self.has_background_jobs():
+            self.message = "Background action still running; status refresh will follow."
+            return
         global _codex_gui_auto_fetch_status
         clear_runtime_status()
         old_auto_fetch = _codex_gui_auto_fetch_status
@@ -1068,6 +1222,64 @@ class App:
             return len(self.selected_modules)
         return len(self.selected_steps[self.cur_module().name])
 
+    def has_background_jobs(self):
+        return bool(self.background_jobs)
+
+    def start_background_button(self, module: Module, idx: int):
+        step = module.steps[idx]
+        key = (module.name, idx)
+        if key in self.background_jobs:
+            self.message = f"{step_display(step)} is already running."
+            return
+
+        action = step.tui_run or step.run
+        if action is None:
+            self.message = f"{step_display(step)} has nothing to run."
+            return
+
+        label = step_display(step)
+        results = queue.Queue(maxsize=1)
+
+        def worker():
+            try:
+                action()
+            except SystemExit as exc:
+                if exc.code in (None, 0):
+                    results.put((True, "done"))
+                else:
+                    results.put((False, str(exc.code)))
+            except Exception as exc:
+                results.put((False, str(exc) or exc.__class__.__name__))
+            else:
+                results.put((True, "done"))
+
+        thread = threading.Thread(target=worker, daemon=True)
+        self.background_jobs[key] = BackgroundJob(label, thread, results)
+        self.message = f"{label}: running..."
+        thread.start()
+
+    def poll_background_jobs(self):
+        finished = []
+        for key, job in list(self.background_jobs.items()):
+            if job.thread.is_alive():
+                continue
+            ok, detail = job.results.get() if not job.results.empty() else (False, "no result")
+            finished.append((key, job.label, ok, detail))
+
+        for key, _label, _ok, _detail in finished:
+            self.background_jobs.pop(key, None)
+
+        if not finished:
+            return
+
+        self.refresh_status()
+        label = finished[-1][1]
+        ok = finished[-1][2]
+        detail = finished[-1][3]
+        self.message = f"{label}: {'done' if ok else 'failed'}"
+        if detail and detail != "done":
+            self.message += f" ({detail})"
+
     # render ------------------------------------------------------------------
     def addnstr(self, y, x, s, attr=0):
         h, w = self.scr.getmaxyx()
@@ -1103,12 +1315,16 @@ class App:
             label, status, step = rows[ri]
             is_toggle = step is not None and step.kind is Kind.TOGGLE
             is_button = step is not None and step.kind is Kind.BUTTON
+            is_running = (not self.is_all()) and (self.cur_module().name, ri) in self.background_jobs
             row_attr = curses.A_REVERSE if ri == self.cursor else 0
             if is_toggle or is_button:
                 # An action button, not a checkbox: arrow + action text, with
                 # status on the right so it cannot read as a deploy checkbox.
                 self.addnstr(3 + vi, 0, f" →  {label}".ljust(w - 1), row_attr)
-                tail = f"now: {status.detail}" if is_toggle else state_label_plain(status)
+                if is_running:
+                    tail = "running..."
+                else:
+                    tail = f"now: {status.detail}" if is_toggle else state_label_plain(status)
                 self.addnstr(3 + vi, max(0, w - len(tail) - 2), tail,
                              row_attr or self.attr(status.state))
             else:
@@ -1124,6 +1340,8 @@ class App:
         cur = rows[self.cursor] if self.cursor < len(rows) else None
         on_action = cur is not None and cur[2] is not None and cur[2].kind in (Kind.TOGGLE, Kind.BUTTON)
         enter = "enter run action" if on_action else f"enter deploy ({self.count_selected()})"
+        if self.message:
+            self.addnstr(h - 2, 0, self.message, curses.A_DIM)
         self.addnstr(h - 1, 0,
                      f" ↑↓ move  space toggle  ←→ context  a all/none  "
                      f"{enter}  r refresh  q quit",
@@ -1150,15 +1368,25 @@ class App:
         elif k == ord("r"):
             self.refresh_status()
         elif k in (curses.KEY_ENTER, 10, 13):
+            if self.has_background_jobs():
+                self.message = "Background action still running; wait for it to finish."
+                return True
             if not self.is_all():
                 m = self.cur_module()
                 if self.cursor < len(m.steps) and m.steps[self.cursor].kind in (Kind.TOGGLE, Kind.BUTTON):
-                    request = "toggle" if m.steps[self.cursor].kind is Kind.TOGGLE else "button"
+                    step = m.steps[self.cursor]
+                    if step.kind is Kind.BUTTON and step.tui_background:
+                        self.start_background_button(m, self.cursor)
+                        return True
+                    request = "toggle" if step.kind is Kind.TOGGLE else "button"
                     self.request = (request, m.name, self.cursor)
                     return False
             self._build_request()
             return False
         elif k in (ord("q"), 27):
+            if self.has_background_jobs():
+                self.message = "Background action still running; wait for it to finish."
+                return True
             return False
         return True
 
@@ -1175,9 +1403,14 @@ class App:
     def run(self):
         curses.curs_set(0)
         self.scr.keypad(True)
+        self.scr.timeout(250)
         while True:
+            self.poll_background_jobs()
             self.draw()
-            if not self.handle(self.scr.getch()):
+            k = self.scr.getch()
+            if k == -1:
+                continue
+            if not self.handle(k):
                 break
         return self.request
 
