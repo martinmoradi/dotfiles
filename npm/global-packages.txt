@@ -8,3 +8,5 @@
 # typescript@5
 
 @openai/codex
+
+@anthropic-ai/claude-code
