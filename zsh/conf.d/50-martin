@@ -99,6 +99,7 @@ Git aliases
   gds      git diff --staged
   ga       git add
   gc       git commit
+  gc-ai    use low-effort Codex for semantic commits, no edits, no push
   gcm      git commit -m
   gp       git push
   gpl      git pull --ff-only
@@ -126,6 +127,130 @@ Stash
   pop       git stash pop
   stashes   git stash list
 EOF
+}
+
+gc-ai() {
+    local root git_dir git_common_dir
+    root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+        echo "gc-ai: not inside a git repository" >&2
+        return 1
+    }
+    git_dir="$(git -C "$root" rev-parse --path-format=absolute --git-dir 2>/dev/null)" || return 1
+    git_common_dir="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+
+    if [[ -z "$(git -C "$root" status --porcelain)" ]]; then
+        echo "gc-ai: no changes to commit"
+        return 0
+    fi
+
+    local before_head
+    before_head="$(git -C "$root" rev-parse --verify HEAD 2>/dev/null || true)"
+
+    local extra_guidance=""
+    if [[ $# -gt 0 ]]; then
+        extra_guidance=$'\n\nExtra guidance from Martin:\n'"$*"
+    fi
+
+    local -a git_write_dirs
+    git_write_dirs=(--add-dir "$git_dir")
+    if [[ "$git_common_dir" != "$git_dir" ]]; then
+        git_write_dirs+=(--add-dir "$git_common_dir")
+    fi
+
+    local codex_prompt
+    codex_prompt="Inspect the current git changes and create coherent semantic commits.
+Split changes into multiple commits when that makes the history clearer.
+Do not edit file contents. Do not push.
+Prefer file-level staging. If a single file contains unrelated changes and you cannot split them safely without editing file contents, stop and explain the recommended split instead.
+Use only git status, git diff, git diff --cached, git diff --stat, git add, git restore --staged, git commit, and git log as needed.
+If changes are risky, ambiguous, contain secrets, or need Martin's judgment, stop and explain instead of committing.
+Use concise commit messages.
+Keep your final response to one concise sentence.
+After committing, report the commits created and any remaining uncommitted changes.${extra_guidance}"
+
+    local log_file last_message
+    log_file="$(mktemp "${TMPDIR:-/tmp}/gc-ai.log.XXXXXX")" || return 1
+    last_message="$(mktemp "${TMPDIR:-/tmp}/gc-ai.out.XXXXXX")" || {
+        rm -f "$log_file"
+        return 1
+    }
+
+    codex --ask-for-approval never exec --ephemeral \
+        --color never \
+        --output-last-message "$last_message" \
+        -c 'model_reasoning_effort="low"' \
+        --sandbox workspace-write \
+        "${git_write_dirs[@]}" \
+        -C "$root" \
+        "$codex_prompt" >"$log_file" 2>&1 &
+
+    local pid=$!
+    local rc
+    if [[ -t 1 ]]; then
+        local -a frames
+        frames=("   " ".  " ".. " "...")
+        local frame_index=1 running_jobs
+        while true; do
+            running_jobs="$(jobs -r -p)"
+            [[ $'\n'"$running_jobs"$'\n' == *$'\n'"$pid"$'\n'* ]] || break
+            printf "\r● gc-ai committing%s" "$frames[$frame_index]"
+            frame_index=$(( frame_index % ${#frames[@]} + 1 ))
+            sleep 0.2
+        done
+        wait "$pid"
+        rc=$?
+        printf "\r%*s\r" 80 ""
+    else
+        wait "$pid"
+        rc=$?
+    fi
+
+    local commit_output
+    if [[ -n "$before_head" ]]; then
+        commit_output="$(git -C "$root" log --format='%h %s' --reverse "${before_head}..HEAD" 2>/dev/null)"
+    else
+        commit_output="$(git -C "$root" log --format='%h %s' --reverse 2>/dev/null)"
+    fi
+
+    local -a commits
+    commits=()
+    if [[ -n "$commit_output" ]]; then
+        commits=("${(@f)commit_output}")
+    fi
+
+    local remaining final_message
+    remaining="$(git -C "$root" status --porcelain)"
+    final_message="$(<"$last_message" 2>/dev/null)"
+    final_message="${final_message//$'\n'/ }"
+
+    if (( rc == 0 && ${#commits[@]} == 1 )); then
+        printf "● Done. Committed — %s\n" "$commits[1]"
+        [[ -n "$remaining" ]] && printf "  Remaining changes: yes\n"
+        rm -f "$log_file" "$last_message"
+        return 0
+    fi
+
+    if (( rc == 0 && ${#commits[@]} > 1 )); then
+        printf "● Done. Committed %d commits\n" "${#commits[@]}"
+        printf "  %s\n" "${commits[@]}"
+        [[ -n "$remaining" ]] && printf "  Remaining changes: yes\n"
+        rm -f "$log_file" "$last_message"
+        return 0
+    fi
+
+    if (( rc == 0 )); then
+        printf "● No commit created"
+        [[ -n "$final_message" ]] && printf " — %s" "$final_message"
+        printf "\n"
+        rm -f "$log_file" "$last_message"
+        return 0
+    fi
+
+    printf "● Error"
+    [[ -n "$final_message" ]] && printf ". %s" "$final_message"
+    printf "\n  Log: %s\n" "$log_file"
+    rm -f "$last_message"
+    return "$rc"
 }
 
 gwcd() {
