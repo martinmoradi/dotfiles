@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -u
+
+# Reset hypridle's timers without resurrecting it if Martin disabled it from Waybar.
+# Pass --ensure when applying config and you explicitly want it started.
+ensure=false
+if [[ "${1:-}" == "--ensure" ]]; then
+    ensure=true
+fi
+
+if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+    exit 0
+fi
+
+if ! command -v hyprctl >/dev/null 2>&1; then
+    exit 0
+fi
+
+hyprctl dispatch dpms on >/dev/null 2>&1 || true
+
+if ! pgrep -x hypridle >/dev/null 2>&1; then
+    if [[ "$ensure" == true ]]; then
+        hyprctl dispatch exec hypridle >/dev/null 2>&1 || true
+    fi
+    exit 0
+fi
+
+pkill -x hypridle >/dev/null 2>&1 || true
+
+for _ in 1 2 3 4 5; do
+    if ! pgrep -x hypridle >/dev/null 2>&1; then
+        break
+    fi
+    sleep 0.05
+done
+
+if pgrep -x hypridle >/dev/null 2>&1; then
+    exit 0
+fi
+
+hyprctl dispatch exec hypridle >/dev/null 2>&1 || true

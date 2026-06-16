@@ -28,7 +28,7 @@ dot sync         # snapshot, commit, and push
 
 ## Repo Map
 
-- `hypr/` - Hyprland custom config, desktop reload, screenshots, clipboard image helpers.
+- `hypr/` - Hyprland custom config, idle/display policy, desktop reload, screenshots, clipboard image helpers.
 - `waybar/` - shared Waybar module overrides used by deploy-time patching.
 - `project-hub/` - project registry, Quickshell UI, Waybar modules, watcher, and Dev Stacks backend.
 - `kitty/` - Kitty config and custom tab bar.

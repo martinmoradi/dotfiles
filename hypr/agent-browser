@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -u
+
+reset_idle() {
+    if command -v hypr-reset-idle >/dev/null 2>&1; then
+        hypr-reset-idle
+    fi
+}
+
+reset_idle
+
+if command -v systemd-inhibit >/dev/null 2>&1; then
+    systemd-inhibit --what=idle:sleep --who=agent-browser \
+        --why="Browser automation in progress" --mode=block \
+        /usr/bin/agent-browser "$@"
+else
+    /usr/bin/agent-browser "$@"
+fi
+status=$?
+
+reset_idle
+exit "$status"

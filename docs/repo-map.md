@@ -19,6 +19,7 @@ mirror live config targets, while others are local tools that get installed into
 
 - `hypr/` - Hyprland custom config and helpers:
   - `custom.conf` is deployed to `~/.config/hypr/conf/custom.conf`.
+  - `hypridle.conf` disables automatic locking and powers displays down on idle.
   - `monitors.conf` is restored from snapshots.
   - helper scripts are installed into `~/.local/bin`.
 - `waybar/` - shared Waybar module overrides used during deploy.
@@ -55,6 +56,7 @@ mirror live config targets, while others are local tools that get installed into
 Deploy writes to:
 
 - `~/.config/hypr/conf/custom.conf`
+- `~/.config/hypr/hypridle.conf`
 - `~/.config/hypr/monitors.conf`
 - `~/.config/dev`
 - `~/.config/quickshell-containers`

@@ -134,7 +134,10 @@ def detect_waybar_mode() -> str:
 def build_registry() -> List[Module]:
     hypr = Module("hypr", "Hyprland config + helper scripts", [
         Step(Kind.COPY, "custom.conf", REPO / "hypr/custom.conf", CFG / "hypr/conf/custom.conf"),
+        Step(Kind.COPY, "hypridle.conf", REPO / "hypr/hypridle.conf", CFG / "hypr/hypridle.conf"),
         Step(Kind.COPY, "hyprpm-autoupdate.sh", REPO / "hypr/hyprpm-autoupdate.sh", LB / "hyprpm-autoupdate.sh", executable=True),
+        Step(Kind.COPY, "hypr-reset-idle", REPO / "hypr/hypr-reset-idle", LB / "hypr-reset-idle", executable=True),
+        Step(Kind.COPY, "agent-browser", REPO / "hypr/agent-browser", LB / "agent-browser", executable=True),
         Step(Kind.COPY, "reload-desktop.sh", REPO / "hypr/reload-desktop.sh", LB / "reload-desktop.sh", executable=True),
         Step(Kind.COPY, "screenshot-area-clipboard.sh", REPO / "hypr/screenshot-area-clipboard.sh", LB / "screenshot-area-clipboard.sh", executable=True),
         Step(Kind.COPY, "screenshot-active-clipboard.sh", REPO / "hypr/screenshot-active-clipboard.sh", LB / "screenshot-active-clipboard.sh", executable=True),
