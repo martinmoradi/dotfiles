@@ -33,6 +33,7 @@ dot sync         # snapshot, commit, and push
 - `project-hub/` - project registry, Quickshell UI, Waybar modules, watcher, and Dev Stacks backend.
 - `kitty/` - Kitty config and custom tab bar.
 - `vscode/` - VS Code user settings and extension snapshot.
+- `npm/` - tracked npm global package specs for `dot npm`.
 - `packages/` - package snapshots for restore or audit.
 - `pacman/` - pacman hook templates for package snapshot sync.
 - `scripts/` - repo automation and deploy helpers.
@@ -48,8 +49,9 @@ The repo is the source of truth. Live config under `~/.config`, `~/.local/bin`,
 and system hook locations is generated or patched from here.
 
 The exception is machine state that naturally changes outside the repo:
-installed packages, VS Code extensions, and monitor layout. Capture those with
-`dot snapshot` before committing.
+installed pacman packages, VS Code extensions, and monitor layout. Capture those
+with `dot snapshot` before committing. Npm globals are managed explicitly with
+`dot npm ...`.
 
 ## Project Hub
 

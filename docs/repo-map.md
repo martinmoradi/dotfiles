@@ -44,6 +44,7 @@ mirror live config targets, while others are local tools that get installed into
 
 - `kitty/` - Kitty config plus paste/tab-bar helpers.
 - `vscode/` - VS Code user settings and extension list.
+- `npm/` - tracked npm global package specs used by `dot npm`.
 
 ## System State
 

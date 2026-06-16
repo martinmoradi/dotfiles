@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -47,6 +48,13 @@ CODEX_GUI_PATCH_REPO_URL = "https://gist.github.com/Yubo-Cao/8b21ac616db0199f986
 CODEX_GUI_PATCH_DIR = STATE / "codex-gui-patch"
 CODEX_GUI_PATCH_FILE = CODEX_GUI_PATCH_DIR / "codex-app-unofficial.patch"
 CODEX_GUI_PATCH_PAYLOAD = "patch-settings-overlap.mjs"
+
+NPM_GLOBALS_FILE = REPO / "npm" / "global-packages.txt"
+NPM_STATUS_CACHE = CACHE / "npm-globals-status.json"
+NPM_EXPECTED_PREFIX = HOME / ".local"
+NPM_WAYBAR_SIGNAL = 7
+NPM_REGISTRY_TTL_SECONDS = int(os.environ.get("DOT_NPM_REGISTRY_TTL_SECONDS", "1800"))
+NPM_REGISTRY_TIMEOUT_SECONDS = int(os.environ.get("DOT_NPM_REGISTRY_TIMEOUT_SECONDS", "30"))
 
 
 # --- data model -------------------------------------------------------------
@@ -158,11 +166,13 @@ def detect_waybar_mode() -> str:
 
 _codex_gui_auto_fetch_status = False
 _codex_gui_patch_status: Optional[Status] = None
+_npm_runtime_status: Optional[dict] = None
 
 
 def clear_runtime_status() -> None:
-    global _codex_gui_patch_status
+    global _codex_gui_patch_status, _npm_runtime_status
     _codex_gui_patch_status = None
+    _npm_runtime_status = None
 
 
 def run_checked(argv: List[str], cwd: Optional[Path] = None) -> None:
@@ -173,8 +183,19 @@ def run_checked(argv: List[str], cwd: Optional[Path] = None) -> None:
         raise SystemExit(rc)
 
 
-def run_text(argv: List[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
-    return subprocess.run([str(a) for a in argv], cwd=cwd, check=False, text=True, capture_output=True)
+def run_text(
+    argv: List[str],
+    cwd: Optional[Path] = None,
+    timeout: Optional[int] = None,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [str(a) for a in argv],
+        cwd=cwd,
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+    )
 
 
 def command_error(result: subprocess.CompletedProcess) -> str:
@@ -538,6 +559,751 @@ def codex_gui_install_patched() -> None:
     print("Patched Codex GUI install complete.")
 
 
+# --- npm globals ------------------------------------------------------------
+
+def npm_have_command() -> bool:
+    return shutil.which("npm") is not None
+
+
+def npm_strip_comment(line: str) -> str:
+    """Strip full-line and whitespace-prefixed trailing comments."""
+    for index, ch in enumerate(line):
+        if ch == "#" and (index == 0 or line[index - 1].isspace()):
+            return line[:index].strip()
+    return line.strip()
+
+
+def npm_spec_name(spec: str) -> str:
+    spec = spec.strip()
+    if not spec:
+        raise ValueError("empty package spec")
+    if spec.startswith("-") or any(ch.isspace() for ch in spec):
+        raise ValueError(f"unsupported package spec: {spec}")
+    if spec.startswith("@"):
+        slash = spec.find("/")
+        if slash <= 1:
+            raise ValueError(f"scoped package needs a name: {spec}")
+        at = spec.rfind("@")
+        return spec[:at] if at > slash else spec
+    return spec.split("@", 1)[0]
+
+
+def npm_parse_tracked_specs() -> tuple[list[dict], list[str]]:
+    warnings = []
+    if not NPM_GLOBALS_FILE.exists():
+        return [], [f"tracked file missing: {NPM_GLOBALS_FILE.relative_to(REPO)}"]
+
+    specs = []
+    seen_names = set()
+    for line_no, line in enumerate(NPM_GLOBALS_FILE.read_text().splitlines(), start=1):
+        spec = npm_strip_comment(line)
+        if not spec:
+            continue
+        try:
+            name = npm_spec_name(spec)
+        except ValueError as exc:
+            warnings.append(f"line {line_no}: {exc}")
+            continue
+        if name in seen_names:
+            warnings.append(f"line {line_no}: duplicate tracked package ignored: {name}")
+            continue
+        seen_names.add(name)
+        specs.append({"name": name, "spec": spec, "line": line_no})
+    return specs, warnings
+
+
+def npm_find_tracked(pkg: str, specs: Optional[list[dict]] = None) -> dict:
+    specs = specs if specs is not None else npm_parse_tracked_specs()[0]
+    try:
+        wanted_name = npm_spec_name(pkg)
+    except ValueError:
+        wanted_name = pkg
+    matches = [item for item in specs if item["name"] == wanted_name or item["spec"] == pkg]
+    if not matches:
+        raise SystemExit(f"{pkg} is not tracked in {NPM_GLOBALS_FILE.relative_to(REPO)}")
+    return matches[0]
+
+
+def npm_ensure_globals_file() -> None:
+    if NPM_GLOBALS_FILE.exists():
+        return
+    NPM_GLOBALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    NPM_GLOBALS_FILE.write_text(
+        "# Tracked npm globals. One package spec per line.\n"
+        "# Blank lines and comments are ignored.\n\n"
+    )
+
+
+def npm_rewrite_tracked_file(add_spec: Optional[str] = None, remove_pkg: Optional[str] = None) -> None:
+    npm_ensure_globals_file()
+    lines = NPM_GLOBALS_FILE.read_text().splitlines()
+
+    add_name = npm_spec_name(add_spec) if add_spec else None
+    remove_name = npm_spec_name(remove_pkg) if remove_pkg else None
+    replaced = False
+    changed = False
+    out = []
+
+    for line in lines:
+        active = npm_strip_comment(line)
+        if not active:
+            out.append(line)
+            continue
+        try:
+            name = npm_spec_name(active)
+        except ValueError:
+            out.append(line)
+            continue
+        if remove_name and (name == remove_name or active == remove_pkg):
+            changed = True
+            continue
+        if add_name and name == add_name:
+            if not replaced:
+                out.append(add_spec)
+                replaced = True
+            changed = True
+            continue
+        out.append(line)
+
+    if add_spec and not replaced:
+        if out and out[-1].strip():
+            out.append("")
+        out.append(add_spec)
+        changed = True
+
+    if changed:
+        NPM_GLOBALS_FILE.write_text("\n".join(out).rstrip() + "\n")
+
+
+def npm_doctor_data() -> dict:
+    expected = str(NPM_EXPECTED_PREFIX)
+    data = {
+        "npm_found": npm_have_command(),
+        "prefix": None,
+        "expected_prefix": expected,
+        "prefix_ok": False,
+        "needs_prefix_fix": False,
+        "path_ok": str(LB) in os.environ.get("PATH", "").split(os.pathsep),
+        "warnings": [],
+    }
+    if not data["npm_found"]:
+        data["warnings"].append("npm is not installed")
+        return data
+
+    try:
+        result = run_text(["npm", "prefix", "-g"], timeout=10)
+    except subprocess.TimeoutExpired:
+        data["warnings"].append("npm prefix -g timed out")
+        return data
+    if result.returncode != 0:
+        data["warnings"].append(f"npm prefix -g failed: {command_error(result)}")
+        return data
+
+    prefix = result.stdout.strip()
+    data["prefix"] = prefix
+    data["prefix_ok"] = prefix == expected
+    if prefix == "/usr" or prefix.startswith("/usr/"):
+        data["needs_prefix_fix"] = True
+        data["warnings"].append(f"npm global prefix is {prefix}; set prefix={expected}")
+    elif not data["prefix_ok"]:
+        data["warnings"].append(f"npm global prefix is {prefix}; expected {expected}")
+    if not data["path_ok"]:
+        data["warnings"].append(f"{LB} is not on PATH")
+    return data
+
+
+def npm_fix_prefix() -> None:
+    if not npm_have_command():
+        raise SystemExit("npm is not installed")
+    NPM_EXPECTED_PREFIX.mkdir(parents=True, exist_ok=True)
+    run_checked(["npm", "config", "set", "prefix", str(NPM_EXPECTED_PREFIX)])
+
+
+def npm_bootstrap_for_mutation() -> None:
+    doctor = npm_doctor_data()
+    if not doctor["npm_found"]:
+        raise SystemExit("npm is required")
+    if not doctor["needs_prefix_fix"]:
+        return
+
+    warning = doctor["warnings"][0] if doctor["warnings"] else "npm global prefix needs setup"
+    print(f"npm doctor: {warning}")
+    if sys.stdin.isatty():
+        answer = input(f"Set npm prefix to {NPM_EXPECTED_PREFIX} now? [y/N] ").strip().lower()
+        if answer in ("y", "yes"):
+            npm_fix_prefix()
+            return
+    raise SystemExit("Run `dot npm doctor --fix` before installing or updating npm globals.")
+
+
+def npm_installed_globals() -> tuple[dict[str, str], list[str]]:
+    if not npm_have_command():
+        return {}, ["npm is not installed"]
+    try:
+        result = run_text(["npm", "ls", "-g", "--depth=0", "--json"], timeout=20)
+    except subprocess.TimeoutExpired:
+        return {}, ["npm ls -g timed out"]
+
+    if not result.stdout.strip():
+        return {}, [f"npm ls -g failed: {command_error(result)}"]
+    try:
+        data = json.loads(result.stdout)
+    except ValueError:
+        return {}, ["npm ls -g returned invalid JSON"]
+
+    warnings = []
+    if result.returncode != 0:
+        warnings.append(f"npm ls -g returned rc={result.returncode}: {command_error(result)}")
+
+    installed = {}
+    for name, details in (data.get("dependencies") or {}).items():
+        if isinstance(details, dict):
+            installed[name] = str(details.get("version") or "unknown")
+    return installed, warnings
+
+
+def npm_load_cache() -> Optional[dict]:
+    try:
+        return json.loads(NPM_STATUS_CACHE.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def npm_cache_fresh(data: Optional[dict]) -> bool:
+    if not data:
+        return False
+    checked_at = data.get("registry_checked_at") or data.get("generated_at") or 0
+    return time.time() < float(checked_at) + int(data.get("ttl_seconds") or NPM_REGISTRY_TTL_SECONDS)
+
+
+def npm_cached_latest(data: Optional[dict]) -> dict[str, dict]:
+    latest = {}
+    if not data:
+        return latest
+    for item in data.get("packages", []):
+        entry = {"latest": item.get("latest"), "latest_error": item.get("latest_error")}
+        if item.get("spec"):
+            latest[item["spec"]] = entry
+        if item.get("name"):
+            latest[item["name"]] = entry
+    return latest
+
+
+def npm_registry_version(spec: str) -> tuple[Optional[str], Optional[str]]:
+    try:
+        result = run_text(["npm", "view", spec, "version", "--json"], timeout=NPM_REGISTRY_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return None, f"npm view {spec} timed out"
+    if result.returncode != 0:
+        return None, command_error(result)
+
+    raw = result.stdout.strip()
+    if not raw:
+        return None, "npm returned no version"
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        parsed = raw.strip('"')
+    if isinstance(parsed, list):
+        return (str(parsed[-1]), None) if parsed else (None, "npm returned no matching versions")
+    if isinstance(parsed, str):
+        return parsed, None
+    return str(parsed), None
+
+
+def npm_package_state(installed: Optional[str], latest: Optional[str], latest_error: Optional[str]) -> str:
+    if installed is None:
+        return "missing"
+    if latest and installed == latest:
+        return IN_SYNC
+    if latest and installed != latest:
+        return "outdated"
+    if latest_error:
+        return "unknown"
+    return "unknown"
+
+
+def npm_status_counts(packages: list[dict], untracked: list[dict], errors: list[str]) -> dict:
+    counts = {
+        "tracked": len(packages),
+        "in_sync": 0,
+        "outdated": 0,
+        "missing": 0,
+        "unknown": 0,
+        "untracked": len(untracked),
+        "errors": len(errors),
+        "actionable": 0,
+    }
+    for item in packages:
+        state = item.get("state")
+        if state == IN_SYNC:
+            counts["in_sync"] += 1
+        elif state in counts:
+            counts[state] += 1
+    counts["actionable"] = counts["outdated"] + counts["missing"]
+    return counts
+
+
+def npm_build_status(query_registry: bool, cache: Optional[dict] = None) -> dict:
+    now = int(time.time())
+    specs, parse_warnings = npm_parse_tracked_specs()
+    installed, installed_warnings = npm_installed_globals()
+    cached_latest = npm_cached_latest(cache)
+    packages = []
+    errors = []
+
+    for item in specs:
+        latest = None
+        latest_error = None
+        cached = cached_latest.get(item["spec"]) or cached_latest.get(item["name"]) or {}
+        if query_registry:
+            latest, latest_error = npm_registry_version(item["spec"])
+            if latest_error and cached.get("latest"):
+                latest = cached.get("latest")
+        else:
+            latest = cached.get("latest")
+            latest_error = cached.get("latest_error")
+
+        if latest_error:
+            errors.append(f"{item['spec']}: {latest_error}")
+        installed_version = installed.get(item["name"])
+        packages.append({
+            "name": item["name"],
+            "spec": item["spec"],
+            "line": item["line"],
+            "installed": installed_version,
+            "latest": latest,
+            "latest_error": latest_error,
+            "state": npm_package_state(installed_version, latest, latest_error),
+        })
+
+    tracked_names = {item["name"] for item in specs}
+    untracked = [
+        {"name": name, "installed": version, "adopt_command": f"dot npm add {name}"}
+        for name, version in sorted(installed.items())
+        if name not in tracked_names
+    ]
+
+    registry_checked_at = now if query_registry else (
+        (cache or {}).get("registry_checked_at") or (cache or {}).get("generated_at")
+    )
+    data = {
+        "generated_at": now,
+        "registry_checked_at": registry_checked_at,
+        "ttl_seconds": NPM_REGISTRY_TTL_SECONDS,
+        "cache_path": str(NPM_STATUS_CACHE),
+        "tracked_file": str(NPM_GLOBALS_FILE),
+        "source": "registry" if query_registry else ("cache" if cache else "local"),
+        "doctor": npm_doctor_data(),
+        "packages": packages,
+        "untracked": untracked,
+        "warnings": parse_warnings + installed_warnings,
+        "errors": errors,
+    }
+    data["cache_expires_at"] = (
+        int(registry_checked_at) + NPM_REGISTRY_TTL_SECONDS if registry_checked_at else None
+    )
+    data["counts"] = npm_status_counts(packages, untracked, errors)
+    return data
+
+
+def npm_write_cache(data: dict) -> None:
+    NPM_STATUS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    NPM_STATUS_CACHE.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def npm_get_status(
+    force_refresh: bool = False,
+    refresh_if_stale: bool = True,
+    allow_registry: bool = True,
+) -> dict:
+    global _npm_runtime_status
+    if _npm_runtime_status is not None and not force_refresh:
+        return _npm_runtime_status
+
+    cache = npm_load_cache()
+    should_refresh = force_refresh or (refresh_if_stale and not npm_cache_fresh(cache))
+    if allow_registry and should_refresh:
+        data = npm_build_status(query_registry=True, cache=cache)
+        npm_write_cache(data)
+    else:
+        data = npm_build_status(query_registry=False, cache=cache)
+    _npm_runtime_status = data
+    return data
+
+
+def npm_get_waybar_status() -> dict:
+    cache = npm_load_cache()
+    if npm_cache_fresh(cache):
+        return cache
+    try:
+        return npm_get_status(force_refresh=True, allow_registry=True)
+    except Exception as exc:
+        if cache:
+            cache = dict(cache)
+            cache.setdefault("errors", []).append(str(exc))
+            cache["source"] = "stale-cache"
+            return cache
+        return {
+            "generated_at": int(time.time()),
+            "registry_checked_at": None,
+            "ttl_seconds": NPM_REGISTRY_TTL_SECONDS,
+            "cache_path": str(NPM_STATUS_CACHE),
+            "tracked_file": str(NPM_GLOBALS_FILE),
+            "source": "error",
+            "doctor": npm_doctor_data(),
+            "packages": [],
+            "untracked": [],
+            "warnings": [],
+            "errors": [str(exc)],
+            "counts": {"tracked": 0, "in_sync": 0, "outdated": 0, "missing": 0, "unknown": 0, "untracked": 0, "errors": 1, "actionable": 0},
+        }
+
+
+def npm_refresh_waybar() -> None:
+    subprocess.run(["pkill", f"-RTMIN+{NPM_WAYBAR_SIGNAL}", "waybar"], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def npm_install_spec(spec: str) -> None:
+    npm_bootstrap_for_mutation()
+    run_checked(["npm", "install", "-g", spec])
+
+
+def npm_install_tracked(pkg: str) -> None:
+    item = npm_find_tracked(pkg)
+    npm_install_spec(item["spec"])
+    clear_runtime_status()
+    data = npm_get_status(force_refresh=True)
+    npm_refresh_waybar()
+    print_npm_summary(data)
+
+
+def npm_update_all() -> None:
+    npm_bootstrap_for_mutation()
+    data = npm_get_status(force_refresh=True)
+    targets = [item for item in data["packages"] if item["state"] in ("outdated", "missing")]
+    if not targets:
+        npm_refresh_waybar()
+        print("Tracked npm globals are in sync.")
+        return
+    for item in targets:
+        run_checked(["npm", "install", "-g", item["spec"]])
+    clear_runtime_status()
+    data = npm_get_status(force_refresh=True)
+    npm_refresh_waybar()
+    print_npm_summary(data)
+
+
+def npm_package_status(item: dict) -> Status:
+    state = item.get("state")
+    if state == IN_SYNC:
+        return Status(IN_SYNC)
+    if state == "outdated":
+        return Status(DRIFTED)
+    if state == "missing":
+        return Status(NEW)
+    if state == "unknown":
+        return Status(SKIPPED, item.get("latest_error") or "registry status unknown")
+    return Status(SKIPPED, state or "unknown")
+
+
+def npm_item_label(item: dict) -> str:
+    name = item["name"]
+    state = item.get("state")
+    installed = item.get("installed")
+    latest = item.get("latest")
+    if state == "outdated":
+        return f"{name}    {installed} -> {latest}"
+    if state == IN_SYNC:
+        return f"{name}    in sync {installed}"
+    if state == "missing":
+        return f"{name}    missing latest {latest or 'unknown'}"
+    return f"{name}    {item.get('latest_error') or 'registry status unknown'}"
+
+
+def npm_tui_data() -> dict:
+    return npm_get_status(refresh_if_stale=False, allow_registry=False)
+
+
+def npm_refresh_button_status() -> Status:
+    data = npm_tui_data()
+    checked = data.get("registry_checked_at")
+    if not checked:
+        return Status(NEW, "no registry cache")
+    age = int(time.time() - int(checked))
+    if npm_cache_fresh(data):
+        return Status(IN_SYNC, f"cache age {age // 60}m")
+    return Status(DRIFTED, f"cache stale {age // 60}m")
+
+
+def npm_update_all_status() -> Status:
+    counts = npm_tui_data().get("counts", {})
+    actionable = counts.get("actionable", 0)
+    if actionable:
+        return Status(DRIFTED, f"{actionable} package{'s' if actionable != 1 else ''}")
+    return Status(IN_SYNC, "tracked packages current")
+
+
+def npm_update_all_display() -> str:
+    counts = npm_tui_data().get("counts", {})
+    actionable = counts.get("actionable", 0)
+    if actionable:
+        return f"update all tracked outdated/missing ({actionable})"
+    return "update all tracked outdated/missing"
+
+
+def npm_package_for_tui(name: str) -> Optional[dict]:
+    for item in npm_tui_data().get("packages", []):
+        if item["name"] == name:
+            return item
+    return None
+
+
+def npm_package_display(name: str, fallback: str) -> str:
+    item = npm_package_for_tui(name)
+    return npm_item_label(item) if item else fallback
+
+
+def npm_package_status_for_tui(name: str) -> Status:
+    item = npm_package_for_tui(name)
+    return npm_package_status(item) if item else Status(SKIPPED, "not tracked")
+
+
+def npm_refresh_action() -> None:
+    clear_runtime_status()
+    data = npm_get_status(force_refresh=True)
+    npm_refresh_waybar()
+    print_npm_summary(data)
+
+
+def print_npm_summary(data: dict, heading: bool = True) -> None:
+    counts = data["counts"]
+    if heading:
+        print("npm globals")
+    print(f"  tracked:   {counts['tracked']}")
+    print(f"  in sync:   {counts['in_sync']}")
+    print(f"  outdated:  {counts['outdated']}")
+    print(f"  missing:   {counts['missing']}")
+    print(f"  untracked: {counts['untracked']}")
+    if data.get("errors"):
+        print(f"  errors:    {len(data['errors'])}")
+
+
+def print_npm_status(data: dict) -> None:
+    print("npm globals\n")
+    doctor = data.get("doctor") or {}
+    prefix = doctor.get("prefix") or "unknown"
+    print(f"  tracked file: {NPM_GLOBALS_FILE.relative_to(REPO)}")
+    print(f"  cache:        {NPM_STATUS_CACHE}")
+    print(f"  npm prefix:   {prefix}")
+    for warning in doctor.get("warnings") or []:
+        print(f"  ! {warning}")
+    print()
+
+    if data["packages"]:
+        print("  tracked")
+        for item in data["packages"]:
+            print(f"    {npm_item_label(item)}")
+    else:
+        print("  tracked")
+        print("    none")
+
+    if data["untracked"]:
+        print("\n  untracked")
+        for item in data["untracked"]:
+            print(f"    {item['name']} {item['installed']}  adopt with: {item['adopt_command']}")
+
+    for warning in data.get("warnings") or []:
+        print(f"\n  warning: {warning}")
+    for error in data.get("errors") or []:
+        print(f"\n  error: {error}")
+
+    print()
+    print_npm_summary(data, heading=False)
+
+
+def npm_waybar_payload(data: dict) -> dict:
+    counts = data.get("counts") or {}
+    actionable = int(counts.get("actionable") or 0)
+    errors = list(data.get("errors") or [])
+    doctor_warnings = (data.get("doctor") or {}).get("warnings") or []
+    if errors or (data.get("doctor") or {}).get("needs_prefix_fix"):
+        tooltip_lines = ["npm globals need attention", *errors, *doctor_warnings]
+        return {"text": "!", "alt": "error", "tooltip": "\n".join(tooltip_lines), "class": "red"}
+    if actionable == 0:
+        return {"text": "", "alt": "0", "tooltip": "Tracked npm globals are in sync"}
+
+    lines = []
+    for item in data.get("packages", []):
+        if item.get("state") == "outdated":
+            lines.append(f"{item['name']} {item['installed']} -> {item['latest']}")
+        elif item.get("state") == "missing":
+            lines.append(f"{item['name']} missing latest {item.get('latest') or 'unknown'}")
+    return {
+        "text": str(actionable),
+        "alt": str(actionable),
+        "tooltip": "\n".join(lines) if lines else f"{actionable} npm globals need updates",
+    }
+
+
+def ml4w_color(name: str) -> Optional[str]:
+    try:
+        value = (CFG / "ml4w/colors" / name).read_text().strip()
+    except OSError:
+        return None
+    return value or None
+
+
+def npm_confirm_update() -> bool:
+    prompt = "DO YOU WANT TO UPDATE TRACKED NPM GLOBALS NOW?"
+    if sys.stdin.isatty() and shutil.which("gum") is not None:
+        argv = ["gum", "confirm"]
+        colors = {
+            "--selected.background": ml4w_color("primary"),
+            "--selected.foreground": ml4w_color("onprimary"),
+            "--prompt.foreground": ml4w_color("onsurface"),
+        }
+        for flag, value in colors.items():
+            if value:
+                argv.append(f"{flag}={value}")
+        argv.append(prompt)
+        return subprocess.run(argv, check=False).returncode == 0
+
+    answer = input(f"{prompt} [y/N] ").strip().lower() if sys.stdin.isatty() else ""
+    return answer in ("y", "yes")
+
+
+def npm_terminal_update() -> None:
+    data = npm_get_status(force_refresh=True)
+    print("npm globals\n")
+    for warning in (data.get("doctor") or {}).get("warnings") or []:
+        print(f"! {warning}")
+    if (data.get("doctor") or {}).get("needs_prefix_fix"):
+        npm_bootstrap_for_mutation()
+        clear_runtime_status()
+        data = npm_get_status(force_refresh=True)
+
+    targets = [item for item in data["packages"] if item["state"] in ("outdated", "missing")]
+    if not targets:
+        npm_refresh_waybar()
+        print("Tracked npm globals are in sync.")
+        if data["untracked"]:
+            print("\nUntracked globals:")
+            for item in data["untracked"]:
+                print(f"{item['name']} {item['installed']}  adopt with: {item['adopt_command']}")
+        if sys.stdin.isatty():
+            input("\nPress Enter to close.")
+        return
+
+    outdated = [item for item in targets if item["state"] == "outdated"]
+    missing = [item for item in targets if item["state"] == "missing"]
+    if outdated:
+        print(f"{len(outdated)} package{'s' if len(outdated) != 1 else ''} outdated:")
+        for item in outdated:
+            print(f"{item['name']} {item['installed']} -> {item['latest']}")
+        print()
+    if missing:
+        print(f"{len(missing)} package{'s' if len(missing) != 1 else ''} missing:")
+        for item in missing:
+            print(f"{item['name']} latest {item.get('latest') or 'unknown'}")
+        print()
+
+    if not npm_confirm_update():
+        print("\n:: Update canceled.")
+        return
+
+    for item in targets:
+        npm_install_spec(item["spec"])
+    clear_runtime_status()
+    data = npm_get_status(force_refresh=True)
+    npm_refresh_waybar()
+    print()
+    print_npm_summary(data)
+    if sys.stdin.isatty():
+        input("\nPress Enter to close.")
+
+
+def cmd_npm(args) -> None:
+    if args.npm_command in (None, "status"):
+        data = npm_get_status()
+        if getattr(args, "json", False):
+            print(json.dumps(data, indent=2, sort_keys=True))
+        else:
+            print_npm_status(data)
+        return
+
+    if args.npm_command == "refresh":
+        data = npm_get_status(force_refresh=True)
+        npm_refresh_waybar()
+        print_npm_status(data)
+        return
+
+    if args.npm_command == "doctor":
+        data = npm_doctor_data()
+        if args.fix and data.get("needs_prefix_fix"):
+            npm_fix_prefix()
+            data = npm_doctor_data()
+        if args.json:
+            print(json.dumps(data, indent=2, sort_keys=True))
+            return
+        print("npm doctor")
+        print(f"  npm:             {'found' if data['npm_found'] else 'missing'}")
+        print(f"  global prefix:   {data.get('prefix') or 'unknown'}")
+        print(f"  expected prefix: {data['expected_prefix']}")
+        print(f"  ~/.local/bin:    {'on PATH' if data['path_ok'] else 'missing from PATH'}")
+        if data["warnings"]:
+            for warning in data["warnings"]:
+                print(f"  ! {warning}")
+            if data.get("needs_prefix_fix"):
+                print("  fix: dot npm doctor --fix")
+        else:
+            print("  ok")
+        return
+
+    if args.npm_command == "add":
+        npm_spec_name(args.package)
+        npm_install_spec(args.package)
+        npm_rewrite_tracked_file(add_spec=args.package)
+        clear_runtime_status()
+        data = npm_get_status(force_refresh=True)
+        npm_refresh_waybar()
+        print_npm_status(data)
+        return
+
+    if args.npm_command == "update":
+        if args.all:
+            if args.package:
+                raise SystemExit("use either `dot npm update --all` or `dot npm update <pkg>`")
+            npm_update_all()
+            return
+        if not args.package:
+            raise SystemExit("usage: dot npm update <pkg> or dot npm update --all")
+        npm_install_tracked(args.package)
+        return
+
+    if args.npm_command == "remove":
+        name = npm_spec_name(args.package)
+        npm_bootstrap_for_mutation()
+        run_checked(["npm", "uninstall", "-g", name])
+        npm_rewrite_tracked_file(remove_pkg=args.package)
+        clear_runtime_status()
+        data = npm_get_status(force_refresh=True)
+        npm_refresh_waybar()
+        print_npm_status(data)
+        return
+
+    if args.npm_command == "waybar":
+        print(json.dumps(npm_waybar_payload(npm_get_waybar_status()), separators=(",", ":")))
+        return
+
+    if args.npm_command == "terminal-update":
+        npm_terminal_update()
+        return
+
+    raise SystemExit(f"unknown npm action: {args.npm_command}")
+
+
 # --- registry ---------------------------------------------------------------
 
 def build_registry() -> List[Module]:
@@ -602,14 +1368,17 @@ def build_registry() -> List[Module]:
         str(CFG / "waybar/modules.json"),
         str(REPO / "waybar/modules-workspace-override.jsonc"),
         str(REPO / "project-hub/waybar/module.jsonc"),
+        str(REPO / "waybar/npm-updates-module.jsonc"),
         str(CFG / "waybar/themes"),
         str(CFG / "waybar"),
     ]
     waybar_disable_argv = [str(REPO / "scripts/disable-hyprland-split-workspaces.sh")]
-    waybar = Module("waybar", "Workspace mode (split plugin / vanilla) + Project Hub island", [
+    waybar = Module("waybar", "Workspace mode (split plugin / vanilla) + Project Hub/npm widgets", [
+        Step(Kind.COPY, "install-npm-updates.sh", REPO / "waybar/install-npm-updates.sh",
+             CFG / "ml4w/settings/install-npm-updates.sh", executable=True),
         # The deploy action: always (re)apply my config. deploy = converge to repo.
-        Step(Kind.ACTION, "apply my config (split + Project Hub island)",
-             dry_note="patch-waybar-project-hub.py (in-place; .bak on first run)",
+        Step(Kind.ACTION, "apply my config (split + Project Hub/npm widgets)",
+             dry_note="patch-waybar-project-hub.py (Project Hub + npm; in-place; .bak on first run)",
              run_argv=waybar_patch_argv,
              guard=Guard(target_exists=CFG / "waybar/modules.json")),
         # Interactive flip (TUI only). deploy never disables; this is the reactive
@@ -622,13 +1391,36 @@ def build_registry() -> List[Module]:
                            "action": "switch to vanilla (disable split plugin)",
                            "argv": waybar_disable_argv},
                  "vanilla": {"desc": "vanilla (plugin disabled)",
-                             "action": "switch to my config (split + island)",
+                             "action": "switch to my config (split + widgets)",
                              "argv": waybar_patch_argv},
                  "unknown": {"desc": "unknown workspace config",
-                             "action": "apply my config (split + island)",
+                             "action": "apply my config (split + widgets)",
                              "argv": waybar_patch_argv},
              }),
     ])
+
+    npm_steps = [
+        Step(Kind.BUTTON, "refresh registry status", interactive_only=True,
+             status_fn=npm_refresh_button_status,
+             run=npm_refresh_action,
+             tui_background=True,
+             tui_run=npm_refresh_action),
+        Step(Kind.BUTTON, "update all tracked outdated/missing", interactive_only=True,
+             status_fn=npm_update_all_status,
+             display_fn=npm_update_all_display,
+             run=npm_update_all),
+    ]
+    tracked_specs, _npm_parse_warnings = npm_parse_tracked_specs()
+    for item in tracked_specs:
+        name = item["name"]
+        spec = item["spec"]
+        npm_steps.append(
+            Step(Kind.BUTTON, spec, interactive_only=True,
+                 status_fn=lambda n=name: npm_package_status_for_tui(n),
+                 display_fn=lambda n=name, f=spec: npm_package_display(n, f),
+                 run=lambda p=name: npm_install_tracked(p))
+        )
+    npm_globals = Module("npm globals", "Tracked npm global CLI packages", npm_steps)
 
     claude_files = [
         ("settings.local.json", False),
@@ -693,7 +1485,7 @@ def build_registry() -> List[Module]:
 
     # waybar first so its tab sits right after "all". Deploy order is unaffected
     # in practice: the patch only edits JSON and never restarts waybar.
-    return [waybar, hypr, kitty, zsh, vscode, sidepad, project_hub, claude, codex, coolify, sync_hooks]
+    return [waybar, npm_globals, hypr, kitty, zsh, vscode, sidepad, project_hub, claude, codex, coolify, sync_hooks]
 
 
 # --- helpers ----------------------------------------------------------------
@@ -988,12 +1780,14 @@ def deploy(reg: List[Module], names=None, step_filter=None, dry_run=False) -> No
     print(f"{header} from {REPO}\n")
     single = len(modules) == 1
     for m in modules:
+        steps = [
+            (idx, step) for idx, step in enumerate(m.steps)
+            if not step.interactive_only and not (single and step_filter is not None and idx not in step_filter)
+        ]
+        if not steps:
+            continue
         print(paint(m.name, "1"))
-        for idx, step in enumerate(m.steps):
-            if step.interactive_only:        # deploy converges to repo, never flips
-                continue
-            if single and step_filter is not None and idx not in step_filter:
-                continue
+        for _idx, step in steps:
             result = apply_step(step, dry_run)
             print(f"   {step_display(step):<34} {result}")
         print()
@@ -1476,6 +2270,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="status, pull gist updates, show pending diff, or patch + install",
     )
 
+    p_npm = sub.add_parser("npm", help="manage tracked npm global packages")
+    npm_sub = p_npm.add_subparsers(dest="npm_command")
+
+    p_npm_status = npm_sub.add_parser("status", help="show tracked npm global status")
+    p_npm_status.add_argument("--json", action="store_true", help="emit machine-readable status")
+
+    npm_sub.add_parser("refresh", help="refresh registry status cache")
+
+    p_npm_doctor = npm_sub.add_parser("doctor", help="check npm global prefix setup")
+    p_npm_doctor.add_argument("--fix", action="store_true", help="set npm prefix to ~/.local when needed")
+    p_npm_doctor.add_argument("--json", action="store_true", help="emit machine-readable doctor status")
+
+    p_npm_add = npm_sub.add_parser("add", help="install a global package and track it")
+    p_npm_add.add_argument("package", help="npm package spec, for example wrangler@latest")
+
+    p_npm_update = npm_sub.add_parser("update", help="update tracked global package(s)")
+    p_npm_update.add_argument("package", nargs="?", help="tracked package name or spec")
+    p_npm_update.add_argument("--all", action="store_true", help="update all tracked outdated/missing packages")
+
+    p_npm_remove = npm_sub.add_parser("remove", help="uninstall a global package and untrack it")
+    p_npm_remove.add_argument("package", help="tracked package name or spec")
+
+    npm_sub.add_parser("waybar", help="emit cached Waybar JSON")
+    npm_sub.add_parser("terminal-update", help="terminal confirmation flow for Waybar click")
+
     return parser
 
 
@@ -1497,6 +2316,8 @@ def main() -> None:
         cmd_sync(args.args)
     elif args.command == "codex":
         cmd_codex(args.action)
+    elif args.command == "npm":
+        cmd_npm(args)
 
 
 if __name__ == "__main__":

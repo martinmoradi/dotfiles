@@ -1,0 +1,8 @@
+# Tracked npm globals. One package spec per line.
+# Blank lines and comments are ignored. Duplicate package names are ignored
+# after the first active spec.
+
+# Examples:
+# @openai/codex
+# wrangler@latest
+# typescript@5

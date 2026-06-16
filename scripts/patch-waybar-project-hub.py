@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch ML4W Waybar config with the Project Hub modules."""
+"""Patch ML4W Waybar config with Project Hub and dotfiles modules."""
 
 from __future__ import annotations
 
@@ -179,12 +179,53 @@ def insert_project_island(text: str) -> str:
     return rewrite_array(text, "modules-left", transform_left)
 
 
+def insert_npm_updates(text: str) -> str:
+    module = "custom/npm-updates"
+    for key in ("modules-left", "modules-center", "modules-right"):
+        text = remove_modules(text, key, {module})
+
+    def transform_right(lines: list[str]) -> list[str]:
+        indent = item_indent(lines)
+        entry = f'{indent}"{module}",\n'
+        for index, line in enumerate(lines):
+            if module_name(line) == "custom/updates":
+                lines = [*lines]
+                lines.insert(index + 1, entry)
+                return lines
+        return [entry, *lines]
+
+    return rewrite_array(text, "modules-right", transform_right)
+
+
 def remove_marked_block(text: str, start: str, end: str) -> str:
     if start not in text or end not in text:
         return text
     before, rest = text.split(start, 1)
     _, after = rest.split(end, 1)
     return before.rstrip() + "\n\n" + after.lstrip()
+
+
+def clone_npm_update_css(text: str, start: str, end: str) -> str:
+    blocks = []
+    blocks.append("""#custom-npm-updates {
+    font-size: 15px;
+}""")
+
+    pattern = re.compile(r"(?ms)#custom-updates\.red\s*\{.*?^\}")
+    match = pattern.search(text)
+    if match:
+        blocks.append(match.group(0).replace("#custom-updates", "#custom-npm-updates", 1))
+
+    if len(blocks) == 1:
+        blocks.append("""#custom-npm-updates.red {
+    border-radius: 8px;
+    margin:6px 0px 6px 7px;
+    padding:0px 6px 0px 6px;
+    background-color: @error;
+    color:@on_error;
+}""")
+
+    return f"{start}\n" + "\n\n".join(blocks) + f"\n{end}\n"
 
 
 def patch_style(path: Path) -> bool:
@@ -195,7 +236,7 @@ def patch_style(path: Path) -> bool:
     old_end = "/* dotfiles current-project end */"
     start = "/* dotfiles project-hub start */"
     end = "/* dotfiles project-hub end */"
-    block = f"""{start}
+    project_block = f"""{start}
 #custom-project-action.running {{
     color: #8bd99c;
 }}
@@ -213,11 +254,15 @@ def patch_style(path: Path) -> bool:
 }}
 {end}
 """
+    npm_start = "/* dotfiles npm-updates start */"
+    npm_end = "/* dotfiles npm-updates end */"
 
     original = path.read_text()
+    npm_block = clone_npm_update_css(original, npm_start, npm_end)
     updated = remove_marked_block(original, old_start, old_end)
     updated = remove_marked_block(updated, start, end)
-    updated = updated.rstrip() + "\n\n" + block
+    updated = remove_marked_block(updated, npm_start, npm_end)
+    updated = updated.rstrip() + "\n\n" + project_block + "\n" + npm_block
 
     if updated == original:
         return False
@@ -231,18 +276,21 @@ def patch_waybar(
     modules_path: Path,
     workspace_override_path: Path,
     project_module_path: Path,
+    npm_module_path: Path,
     themes_dir: Path,
     waybar_dir: Path,
 ) -> None:
     modules = load_jsonc(modules_path)
     workspace_override = load_jsonc(workspace_override_path)
     project_module = load_jsonc(project_module_path)
+    npm_module = load_jsonc(npm_module_path)
 
     backup_once(modules_path)
     modules["hyprland/workspaces"] = workspace_override["hyprland/workspaces"]
     modules.pop("custom/current-project", None)
     modules.pop("custom/containers", None)
     modules.update(project_module)
+    modules.update(npm_module)
     write_json(modules_path, modules)
 
     touched_themes = []
@@ -254,12 +302,12 @@ def patch_waybar(
         if "~/.config/waybar/modules.json" not in includes:
             continue
 
-        modules_left = data.get("modules-left")
-        if not isinstance(modules_left, list):
+        if not any(isinstance(data.get(key), list) for key in ("modules-left", "modules-center", "modules-right")):
             continue
 
         original = config_path.read_text()
         updated = insert_project_island(original)
+        updated = insert_npm_updates(updated)
         if updated == original:
             continue
 
@@ -278,10 +326,11 @@ def patch_waybar(
 
 
 def main() -> int:
-    if len(sys.argv) != 6:
+    if len(sys.argv) != 7:
         print(
             "Usage: patch-waybar-project-hub.py "
-            "<modules.json> <workspace-override.jsonc> <project-module.jsonc> <themes-dir> <waybar-dir>",
+            "<modules.json> <workspace-override.jsonc> <project-module.jsonc> "
+            "<npm-module.jsonc> <themes-dir> <waybar-dir>",
             file=sys.stderr,
         )
         return 2
