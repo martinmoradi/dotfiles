@@ -6,3 +6,5 @@
 # @openai/codex
 # wrangler@latest
 # typescript@5
+
+@openai/codex
