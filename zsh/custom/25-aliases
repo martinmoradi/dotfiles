@@ -31,6 +31,205 @@ alias docs='open_folder "$HOME/Documents"'
 alias dl='open_folder "$HOME/Downloads"'
 alias pics='open_folder "$HOME/Pictures"'
 
+unalias pac pac-search pac-installed pac-info pac-local-info pac-files \
+    pac-owner pac-check pac-update pac-add pac-remove pac-clean pac-orphans \
+    paru-search paru-installed paru-info paru-local-info paru-files \
+    paru-owner paru-check paru-check-aur paru-update paru-add paru-remove \
+    paru-clean paru-orphans paru-news 2>/dev/null
+
+pac() {
+    local action="$1"
+    case "$action" in
+        "")
+            command pacman
+            ;;
+        help|-h|--help)
+            cat <<'EOF'
+pac commands
+
+  pac search <term>        search repo packages
+  pac installed <term>     search installed packages
+  pac info <package>       show repo package info
+  pac local info <package> show installed package info
+  pac files <package>      list installed package files
+  pac owner <path>         show which package owns a file
+  pac check updates        list available repo updates
+  pac update               update repo packages
+  pac add <package>        install repo package
+  pac remove <package>     remove package and unused deps
+  pac clean                clean package cache
+  pac orphans              list orphaned packages
+EOF
+            ;;
+        search)
+            shift
+            command pacman -Ss "$@"
+            ;;
+        installed|local-search)
+            shift
+            command pacman -Qs "$@"
+            ;;
+        info)
+            shift
+            command pacman -Si "$@"
+            ;;
+        local-info)
+            shift
+            command pacman -Qi "$@"
+            ;;
+        local)
+            shift
+            if [[ "$1" == "info" ]]; then
+                shift
+                command pacman -Qi "$@"
+            else
+                command pacman -Q "$@"
+            fi
+            ;;
+        files)
+            shift
+            command pacman -Ql "$@"
+            ;;
+        owner)
+            shift
+            command pacman -Qo "$@"
+            ;;
+        check)
+            shift
+            [[ "$1" == "updates" ]] && shift
+            checkupdates "$@"
+            ;;
+        update|upgrade)
+            shift
+            sudo pacman -Syu "$@"
+            ;;
+        add|install)
+            shift
+            sudo pacman -S "$@"
+            ;;
+        remove|rm|delete)
+            shift
+            sudo pacman -Rns "$@"
+            ;;
+        clean)
+            shift
+            sudo pacman -Sc "$@"
+            ;;
+        orphans)
+            shift
+            command pacman -Qtdq "$@"
+            ;;
+        *)
+            command pacman "$@"
+            ;;
+    esac
+}
+
+paru() {
+    local action="$1"
+    case "$action" in
+        "")
+            command paru
+            ;;
+        help|-h|--help)
+            cat <<'EOF'
+paru commands
+
+  paru search <term>        search repo and AUR packages
+  paru installed <term>     search installed packages
+  paru info <package>       show repo/AUR package info
+  paru local info <package> show installed package info
+  paru files <package>      list installed package files
+  paru owner <path>         show which package owns a file
+  paru check updates        list available updates
+  paru check aur            list available AUR updates
+  paru update               update repo and AUR packages
+  paru add <package>        install repo/AUR package
+  paru remove <package>     remove package and unused deps
+  paru clean                clean package cache
+  paru orphans              list orphaned packages
+  paru news                 show Arch news
+EOF
+            ;;
+        search)
+            shift
+            command paru -Ss "$@"
+            ;;
+        installed|local-search)
+            shift
+            command paru -Qs "$@"
+            ;;
+        info)
+            shift
+            command paru -Si "$@"
+            ;;
+        local-info)
+            shift
+            command paru -Qi "$@"
+            ;;
+        local)
+            shift
+            if [[ "$1" == "info" ]]; then
+                shift
+                command paru -Qi "$@"
+            else
+                command paru -Q "$@"
+            fi
+            ;;
+        files)
+            shift
+            command paru -Ql "$@"
+            ;;
+        owner)
+            shift
+            command paru -Qo "$@"
+            ;;
+        check)
+            shift
+            case "$1" in
+                aur)
+                    shift
+                    command paru -Qua "$@"
+                    ;;
+                updates|"")
+                    [[ "$1" == "updates" ]] && shift
+                    command paru -Qu "$@"
+                    ;;
+                *)
+                    command paru -Q "$@"
+                    ;;
+            esac
+            ;;
+        update|upgrade)
+            shift
+            command paru -Syu "$@"
+            ;;
+        add|install)
+            shift
+            command paru -S "$@"
+            ;;
+        remove|rm|delete)
+            shift
+            command paru -Rns "$@"
+            ;;
+        clean)
+            shift
+            command paru -Sc "$@"
+            ;;
+        orphans)
+            shift
+            command paru -Qtdq "$@"
+            ;;
+        news)
+            shift
+            command paru -Pw "$@"
+            ;;
+        *)
+            command paru "$@"
+            ;;
+    esac
+}
+
 alias g='git'
 alias gs='git status --short --branch'
 alias gd='git diff'
