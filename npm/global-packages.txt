@@ -10,3 +10,5 @@
 @openai/codex
 
 @anthropic-ai/claude-code
+
+@colbymchenry/codegraph
