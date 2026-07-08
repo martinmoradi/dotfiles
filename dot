@@ -17,12 +17,10 @@ import hashlib
 import json
 import os
 import queue
-import re
 import shutil
 import shlex
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -41,13 +39,10 @@ CACHE = Path(os.environ.get("XDG_CACHE_HOME") or (HOME / ".cache")) / "dotfiles"
 CLAUDE = HOME / ".claude"
 CODEX = HOME / ".codex"
 
-CODEX_GUI_PACKAGE = "codex-app-unofficial"
-CODEX_GUI_AUR_URL = f"https://aur.archlinux.org/{CODEX_GUI_PACKAGE}.git"
-CODEX_GUI_PATCH_BRANCH = "main"
-CODEX_GUI_PATCH_REPO_URL = "https://gist.github.com/Yubo-Cao/8b21ac616db0199f98676b41e49d3a8e.git"
-CODEX_GUI_PATCH_DIR = STATE / "codex-gui-patch"
-CODEX_GUI_PATCH_FILE = CODEX_GUI_PATCH_DIR / "codex-app-unofficial.patch"
-CODEX_GUI_PATCH_PAYLOAD = "patch-settings-overlap.mjs"
+CODEX_DESKTOP_PACKAGE = "codex-desktop"
+CODEX_DESKTOP_COMMAND = "codex-desktop"
+CODEX_UPDATE_MANAGER_COMMAND = "codex-update-manager"
+CODEX_UPDATE_MANAGER_SERVICE = "codex-update-manager.service"
 
 NPM_GLOBALS_FILE = REPO / "npm" / "global-packages.txt"
 NPM_STATUS_CACHE = CACHE / "npm-globals-status.json"
@@ -164,14 +159,11 @@ def detect_waybar_mode() -> str:
     return "unknown"
 
 
-_codex_gui_auto_fetch_status = False
-_codex_gui_patch_status: Optional[Status] = None
 _npm_runtime_status: Optional[dict] = None
 
 
 def clear_runtime_status() -> None:
-    global _codex_gui_patch_status, _npm_runtime_status
-    _codex_gui_patch_status = None
+    global _npm_runtime_status
     _npm_runtime_status = None
 
 
@@ -213,350 +205,71 @@ def short_ref(ref: str) -> str:
     return ref[:8] if ref else "unknown"
 
 
-def codex_gui_patch_repo_present() -> bool:
-    return (CODEX_GUI_PATCH_DIR / ".git").exists()
-
-
-def codex_gui_ensure_patch_repo(auto_fetch: bool) -> tuple[bool, str]:
-    if shutil.which("git") is None:
-        return False, "command not found: git"
-
-    if not codex_gui_patch_repo_present():
-        if CODEX_GUI_PATCH_DIR.exists():
-            return False, f"path exists but is not a git repo: {CODEX_GUI_PATCH_DIR}"
-        if not auto_fetch:
-            return False, "patch source not cloned"
-        CODEX_GUI_PATCH_DIR.parent.mkdir(parents=True, exist_ok=True)
-        result = run_text(["git", "clone", CODEX_GUI_PATCH_REPO_URL, str(CODEX_GUI_PATCH_DIR)])
-        if result.returncode != 0:
-            return False, f"clone failed: {command_error(result)}"
-        return True, ""
-
-    if auto_fetch:
-        result = run_text(["git", "fetch", "--prune", "origin", CODEX_GUI_PATCH_BRANCH], CODEX_GUI_PATCH_DIR)
-        if result.returncode != 0:
-            return False, f"fetch failed: {command_error(result)}"
-
-    return True, ""
-
-
-def codex_gui_git_stdout(args: List[str]) -> tuple[bool, str]:
-    result = run_text(["git", *args], CODEX_GUI_PATCH_DIR)
-    if result.returncode != 0:
-        return False, command_error(result)
-    return True, result.stdout.strip()
-
-
-def codex_gui_patch_refs() -> tuple[str, str, int, int]:
-    ok, local = codex_gui_git_stdout(["rev-parse", "HEAD"])
-    if not ok:
-        raise RuntimeError(local)
-    ok, remote = codex_gui_git_stdout(["rev-parse", f"origin/{CODEX_GUI_PATCH_BRANCH}"])
-    if not ok:
-        remote = local
-    result = run_text(
-        ["git", "rev-list", "--left-right", "--count", f"HEAD...origin/{CODEX_GUI_PATCH_BRANCH}"],
-        CODEX_GUI_PATCH_DIR,
-    )
-    if result.returncode != 0:
-        return local, remote, 0, 0
-    parts = result.stdout.split()
-    ahead, behind = (int(parts[0]), int(parts[1])) if len(parts) >= 2 else (0, 0)
-    return local, remote, ahead, behind
-
-
-def codex_gui_patch_status(auto_fetch: Optional[bool] = None) -> Status:
-    global _codex_gui_patch_status
-    if auto_fetch is None:
-        auto_fetch = _codex_gui_auto_fetch_status
-    if _codex_gui_patch_status is not None:
-        return _codex_gui_patch_status
-
-    ok, reason = codex_gui_ensure_patch_repo(auto_fetch=auto_fetch)
-    if not ok:
-        state = NEW if reason == "patch source not cloned" else SKIPPED
-        status = Status(state, reason)
-        if auto_fetch:
-            _codex_gui_patch_status = status
-        return status
-
-    if not CODEX_GUI_PATCH_FILE.exists():
-        status = Status(SKIPPED, "missing codex-app-unofficial.patch")
-        if auto_fetch:
-            _codex_gui_patch_status = status
-        return status
-
-    dirty = run_text(["git", "status", "--porcelain"], CODEX_GUI_PATCH_DIR)
-    if dirty.returncode == 0 and dirty.stdout.strip():
-        status = Status(DRIFTED, f"local edits in {CODEX_GUI_PATCH_DIR}")
-        if auto_fetch:
-            _codex_gui_patch_status = status
-        return status
-
-    try:
-        local, remote, ahead, behind = codex_gui_patch_refs()
-    except RuntimeError as exc:
-        status = Status(SKIPPED, str(exc))
-        if auto_fetch:
-            _codex_gui_patch_status = status
-        return status
-
-    if ahead and behind:
-        status = Status(DRIFTED, f"diverged +{ahead}/-{behind}: {short_ref(local)} vs {short_ref(remote)}")
-    elif behind:
-        status = Status(DRIFTED, f"behind {behind}: {short_ref(local)} -> {short_ref(remote)}")
-    elif ahead:
-        status = Status(DRIFTED, f"local ahead {ahead}: {short_ref(local)}")
-    else:
-        status = Status(IN_SYNC, short_ref(local))
-
-    if auto_fetch:
-        _codex_gui_patch_status = status
-    return status
-
-
-def codex_gui_patch_display() -> str:
-    status = codex_gui_patch_status()
-    if status.state == NEW:
-        return "clone patch source"
-    if status.state == DRIFTED:
-        return "pull patch source"
-    if status.state == SKIPPED:
-        return "check patch source"
-    return "fetch patch source"
-
-
-def codex_gui_patch_rev() -> str:
-    if not codex_gui_patch_repo_present():
-        return "not cloned"
-    ok, local = codex_gui_git_stdout(["rev-parse", "--short=8", "HEAD"])
-    return local if ok else "unknown"
-
-
-def codex_gui_pull_patch_source(quiet: bool = False) -> None:
-    clear_runtime_status()
-    if shutil.which("git") is None:
-        raise SystemExit("git is required")
-
-    run = run_checked_quiet if quiet else run_checked
-    if not codex_gui_patch_repo_present():
-        if CODEX_GUI_PATCH_DIR.exists():
-            raise SystemExit(f"{CODEX_GUI_PATCH_DIR} exists but is not a git repo")
-        CODEX_GUI_PATCH_DIR.parent.mkdir(parents=True, exist_ok=True)
-        run(["git", "clone", CODEX_GUI_PATCH_REPO_URL, str(CODEX_GUI_PATCH_DIR)])
-    else:
-        dirty = run_text(["git", "status", "--porcelain"], CODEX_GUI_PATCH_DIR)
-        if dirty.returncode == 0 and dirty.stdout.strip():
-            if quiet:
-                raise RuntimeError(f"patch source has local edits: {CODEX_GUI_PATCH_DIR}")
-            print(f"Patch source has local edits: {CODEX_GUI_PATCH_DIR}")
-            print(dirty.stdout.rstrip())
-            raise SystemExit(1)
-        run(["git", "fetch", "--prune", "origin", CODEX_GUI_PATCH_BRANCH], CODEX_GUI_PATCH_DIR)
-        run(["git", "pull", "--ff-only", "origin", CODEX_GUI_PATCH_BRANCH], CODEX_GUI_PATCH_DIR)
-
-    clear_runtime_status()
-    status = codex_gui_patch_status(auto_fetch=False)
-    if not quiet:
-        print(f"patch source: {state_label_plain(status)}")
-        print(f"path: {CODEX_GUI_PATCH_DIR}")
-
-
-def codex_gui_pull_patch_source_quiet() -> None:
-    codex_gui_pull_patch_source(quiet=True)
-
-
-def codex_gui_patch_diff() -> None:
-    clear_runtime_status()
-    ok, reason = codex_gui_ensure_patch_repo(auto_fetch=True)
-    if not ok:
-        raise SystemExit(reason)
-
-    status = codex_gui_patch_status(auto_fetch=False)
-    print(f"patch source: {state_label_plain(status)}")
-    print(f"path: {CODEX_GUI_PATCH_DIR}\n")
-
-    local, remote, _ahead, behind = codex_gui_patch_refs()
-    if local == remote:
-        print("Patch source is in sync with origin/main.")
-        return
-
-    if behind:
-        run_checked(["git", "log", "--oneline", f"HEAD..origin/{CODEX_GUI_PATCH_BRANCH}"], CODEX_GUI_PATCH_DIR)
-        print()
-    run_checked(["git", "diff", "--stat", f"HEAD..origin/{CODEX_GUI_PATCH_BRANCH}"], CODEX_GUI_PATCH_DIR)
-    print()
-    run_checked(["git", "diff", f"HEAD..origin/{CODEX_GUI_PATCH_BRANCH}"], CODEX_GUI_PATCH_DIR)
-
-
-def codex_gui_patch_file_from_diff(patch_path: Path, rel_path: str) -> str:
-    current_file = False
-    in_hunk = False
-    out: list[str] = []
-    diff_header = f"diff --git a/{rel_path} b/{rel_path}"
-
-    for line in patch_path.read_text().splitlines(keepends=True):
-        if line.startswith("diff --git "):
-            if current_file:
-                break
-            current_file = line.rstrip("\n") == diff_header
-            in_hunk = False
-            continue
-        if not current_file:
-            continue
-        if line.startswith("@@"):
-            in_hunk = True
-            continue
-        if not in_hunk or line.startswith("\\"):
-            continue
-        if line.startswith("+"):
-            out.append(line[1:])
-        elif line.startswith(" "):
-            out.append(line[1:])
-
-    if not out:
-        raise RuntimeError(f"could not extract {rel_path} from {patch_path}")
-    return "".join(out)
-
-
-def pkgbuild_quote(value: str) -> str:
-    return "'" + value.replace("'", "'\\''") + "'"
-
-
-def codex_gui_ensure_pkgbuild_array_value(text: str, name: str, value: str) -> str:
-    quoted = pkgbuild_quote(value)
-    multiline = re.search(rf"(?ms)^(?P<head>{name}=\(\n)(?P<body>.*?)(?P<tail>^\))", text)
-    if multiline:
-        if value in multiline.group("body"):
-            return text
-        return text[:multiline.end("body")] + f"  {quoted}\n" + text[multiline.end("body"):]
-
-    singleline = re.search(rf"(?m)^(?P<head>{name}=\()(?P<body>[^\n]*)(?P<tail>\))", text)
-    if singleline:
-        if value in singleline.group("body"):
-            return text
-        body = singleline.group("body").rstrip()
-        return text[:singleline.start("body")] + body + (" " if body else "") + quoted + text[singleline.end("body"):]
-
-    raise RuntimeError(f"could not find {name}=() in PKGBUILD")
-
-
-def codex_gui_ensure_pkgbuild_makedepend(text: str) -> str:
-    if re.search(r"(?m)^makedepends=\(", text):
-        return codex_gui_ensure_pkgbuild_array_value(text, "makedepends", "asar")
-
-    line = "makedepends=('asar')\n"
-    license_line = re.search(r"(?m)^license=.*\n", text)
-    if license_line:
-        return text[:license_line.end()] + line + text[license_line.end():]
-
-    depends_line = re.search(r"(?m)^depends=.*\n", text)
-    if depends_line:
-        return text[:depends_line.start()] + line + text[depends_line.start():]
-
-    raise RuntimeError("could not place makedepends in PKGBUILD")
-
-
-def codex_gui_ensure_pkgbuild_prepare(text: str) -> str:
-    command = f'  node "${{srcdir}}/{CODEX_GUI_PATCH_PAYLOAD}" "${{srcdir}}/linux-unpacked/resources/app.asar"\n'
-    if command.strip() in text:
-        return text
-
-    prepare_fn = re.search(r"(?m)^prepare\(\)\s*\{\n", text)
-    if prepare_fn:
-        return text[:prepare_fn.end()] + command + text[prepare_fn.end():]
-
-    package_fn = re.search(r"(?m)^package\(\)\s*\{", text)
-    if not package_fn:
-        raise RuntimeError("could not find package() in PKGBUILD")
-
-    block = f"prepare() {{\n{command}}}\n\n"
-    return text[:package_fn.start()] + block + text[package_fn.start():]
-
-
-def codex_gui_apply_patch_adaptively(aur_dir: Path) -> None:
-    payload = codex_gui_patch_file_from_diff(CODEX_GUI_PATCH_FILE, CODEX_GUI_PATCH_PAYLOAD)
-    payload_path = aur_dir / CODEX_GUI_PATCH_PAYLOAD
-    payload_path.write_text(payload)
-    payload_hash = hashlib.sha256(payload.encode()).hexdigest()
-
-    pkgbuild_path = aur_dir / "PKGBUILD"
-    pkgbuild = pkgbuild_path.read_text()
-    pkgbuild = codex_gui_ensure_pkgbuild_makedepend(pkgbuild)
-    pkgbuild = codex_gui_ensure_pkgbuild_array_value(pkgbuild, "source", CODEX_GUI_PATCH_PAYLOAD)
-    pkgbuild = codex_gui_ensure_pkgbuild_array_value(pkgbuild, "sha256sums", payload_hash)
-    pkgbuild = codex_gui_ensure_pkgbuild_prepare(pkgbuild)
-    pkgbuild_path.write_text(pkgbuild)
-
-    srcinfo = run_text(["makepkg", "--printsrcinfo"], aur_dir)
-    if srcinfo.returncode != 0:
-        raise RuntimeError(f"makepkg --printsrcinfo failed: {command_error(srcinfo)}")
-    (aur_dir / ".SRCINFO").write_text(srcinfo.stdout)
-
-    print(f"Adaptive patch added {CODEX_GUI_PATCH_PAYLOAD} ({short_ref(payload_hash)}) to the current AUR package.")
-
-
-def codex_gui_apply_patch(aur_dir: Path) -> None:
-    check = run_text(["git", "apply", "--check", "--whitespace=nowarn", str(CODEX_GUI_PATCH_FILE)], aur_dir)
-    if check.returncode == 0:
-        run_checked(["git", "apply", "--whitespace=nowarn", str(CODEX_GUI_PATCH_FILE)], aur_dir)
-        return
-
-    print("Exact gist patch does not match the current AUR package.")
-    print(f"git apply --check: {command_error(check)}")
-    print("Warning: adapting the pulled gist patch to current AUR metadata.")
-    print("If upstream Codex internals changed, the package build may still fail; reinstalling the unpatched package is the fallback.")
-    codex_gui_apply_patch_adaptively(aur_dir)
-
-
-def codex_gui_installed_version() -> tuple[bool, str]:
+def codex_desktop_package_status() -> Status:
     if shutil.which("pacman") is None:
-        return False, "pacman not found"
-    result = run_text(["pacman", "-Q", CODEX_GUI_PACKAGE])
+        return Status(SKIPPED, "pacman not found")
+    result = run_text(["pacman", "-Q", CODEX_DESKTOP_PACKAGE])
     if result.returncode != 0:
-        return False, "not installed"
-    return True, result.stdout.strip()
+        return Status(NEW, "package not installed")
+    return Status(IN_SYNC, result.stdout.strip())
 
 
-def codex_gui_install_status() -> Status:
-    patch_status = codex_gui_patch_status()
-    if patch_status.state in (SKIPPED, NEW):
-        return Status(patch_status.state, f"patch source: {patch_status.detail}")
-
-    installed, detail = codex_gui_installed_version()
-    if not installed:
-        return Status(NEW, f"{detail}; patch {codex_gui_patch_rev()}")
-    return Status(ACTION_ONLY, f"{detail}; patch {codex_gui_patch_rev()}")
+def codex_desktop_command_status() -> Status:
+    path = shutil.which(CODEX_DESKTOP_COMMAND)
+    if path is None:
+        return Status(NEW, f"{CODEX_DESKTOP_COMMAND} not on PATH")
+    return Status(IN_SYNC, path)
 
 
-def codex_gui_install_patched() -> None:
-    clear_runtime_status()
-    ok, reason = codex_gui_ensure_patch_repo(auto_fetch=True)
-    if not ok:
-        raise SystemExit(reason)
-    patch_status = codex_gui_patch_status(auto_fetch=False)
-    if patch_status.state == DRIFTED:
-        print(f"Using local patch source even though it is {patch_status.detail}.")
-        print("Run `dot codex pull` first if you want the latest gist revision.\n")
+def codex_update_manager_service_status() -> Status:
+    if shutil.which("systemctl") is None:
+        return Status(SKIPPED, "systemctl not found")
+    enabled = run_text(["systemctl", "--user", "is-enabled", CODEX_UPDATE_MANAGER_SERVICE])
+    active = run_text(["systemctl", "--user", "is-active", CODEX_UPDATE_MANAGER_SERVICE])
+    detail = f"enabled={enabled.stdout.strip() or 'unknown'} active={active.stdout.strip() or 'unknown'}"
+    if enabled.returncode == 0 and active.returncode == 0:
+        return Status(IN_SYNC, detail)
+    return Status(DRIFTED, detail)
 
-    for cmd in ("git", "makepkg"):
-        if shutil.which(cmd) is None:
-            raise SystemExit(f"{cmd} is required")
-    if not CODEX_GUI_PATCH_FILE.exists():
-        raise SystemExit(f"missing patch file: {CODEX_GUI_PATCH_FILE}")
 
-    CACHE.mkdir(parents=True, exist_ok=True)
-    build_root = Path(tempfile.mkdtemp(prefix="codex-gui-", dir=CACHE))
-    aur_dir = build_root / CODEX_GUI_PACKAGE
+def codex_update_manager_status() -> Status:
+    if shutil.which(CODEX_UPDATE_MANAGER_COMMAND) is None:
+        return Status(NEW, f"{CODEX_UPDATE_MANAGER_COMMAND} not on PATH")
+    result = run_text([CODEX_UPDATE_MANAGER_COMMAND, "status", "--json"], timeout=20)
+    if result.returncode != 0:
+        return Status(DRIFTED, command_error(result))
     try:
-        run_checked(["git", "clone", "--depth=1", CODEX_GUI_AUR_URL, str(aur_dir)])
-        codex_gui_apply_patch(aur_dir)
-        run_checked(["makepkg", "-si"], aur_dir)
-    except SystemExit:
-        print(f"\nBuild workspace kept for inspection: {build_root}")
-        raise
-    shutil.rmtree(build_root, ignore_errors=True)
-    print("Patched Codex GUI install complete.")
+        data = json.loads(result.stdout)
+    except ValueError:
+        return Status(DRIFTED, "invalid updater JSON")
+    update_status = data.get("status") or "unknown"
+    cli_status = data.get("cli_status") or "unknown"
+    installed = data.get("installed_version") or "unknown"
+    candidate = data.get("candidate_version")
+    detail = f"{installed}; updater={update_status}; cli={cli_status}"
+    if candidate:
+        return Status(DRIFTED, f"{detail}; candidate={candidate}")
+    return Status(IN_SYNC, detail)
+
+
+def codex_desktop_open() -> None:
+    path = shutil.which(CODEX_DESKTOP_COMMAND)
+    if path is None:
+        raise SystemExit(f"{CODEX_DESKTOP_COMMAND} not on PATH")
+    subprocess.Popen([path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print(f"Launched {path}")
+
+
+def codex_update_manager_check_now() -> None:
+    if shutil.which(CODEX_UPDATE_MANAGER_COMMAND) is None:
+        raise SystemExit(f"{CODEX_UPDATE_MANAGER_COMMAND} not on PATH")
+    run_checked([CODEX_UPDATE_MANAGER_COMMAND, "check-now"])
+
+
+def codex_update_manager_install_ready() -> None:
+    if shutil.which(CODEX_UPDATE_MANAGER_COMMAND) is None:
+        raise SystemExit(f"{CODEX_UPDATE_MANAGER_COMMAND} not on PATH")
+    run_checked([CODEX_UPDATE_MANAGER_COMMAND, "install-ready"])
 
 
 # --- npm globals ------------------------------------------------------------
@@ -1450,17 +1163,18 @@ def build_registry() -> List[Module]:
         Step(Kind.COPY, "claude-mcp-chrome", REPO / "scripts/claude-mcp-chrome.sh", LB / "claude-mcp-chrome", executable=True),
     ])
 
-    codex = Module("codex", "Codex instructions + patched GUI workflow", [
+    codex = Module("codex", "Codex instructions + native desktop package", [
         Step(Kind.SYMLINK, "AGENTS.md", REPO / "codex" / "AGENTS.md", CODEX / "AGENTS.md"),
-        Step(Kind.BUTTON, "patch source", interactive_only=True,
-             status_fn=codex_gui_patch_status,
-             display_fn=codex_gui_patch_display,
-             run=codex_gui_pull_patch_source,
-             tui_background=True,
-             tui_run=codex_gui_pull_patch_source_quiet),
-        Step(Kind.BUTTON, "patch + install Codex GUI", interactive_only=True,
-             status_fn=codex_gui_install_status,
-             run=codex_gui_install_patched),
+        Step(Kind.BUTTON, "desktop package", interactive_only=True,
+             status_fn=codex_desktop_package_status),
+        Step(Kind.BUTTON, "desktop command", interactive_only=True,
+             status_fn=codex_desktop_command_status,
+             run=codex_desktop_open),
+        Step(Kind.BUTTON, "update manager", interactive_only=True,
+             status_fn=codex_update_manager_status,
+             run=codex_update_manager_check_now),
+        Step(Kind.BUTTON, "update service", interactive_only=True,
+             status_fn=codex_update_manager_service_status),
     ])
 
     coolify = Module("coolify-notify", "Staging deploy notifications (user timer)", [
@@ -1898,24 +1612,33 @@ def cmd_sync(args) -> None:
 def cmd_codex(action: str) -> None:
     if action == "status":
         clear_runtime_status()
-        patch = codex_gui_patch_status(auto_fetch=True)
-        install = codex_gui_install_status()
-        print("Codex")
-        print(f"  patch source: {state_label_plain(patch)}")
-        print(f"  install:      {state_label_plain(install)}")
-        print(f"  local path:   {CODEX_GUI_PATCH_DIR}")
+        package = codex_desktop_package_status()
+        command = codex_desktop_command_status()
+        updater = codex_update_manager_status()
+        service = codex_update_manager_service_status()
+        handler = run_text(["xdg-mime", "query", "default", "x-scheme-handler/codex"])
+        print("Codex Desktop")
+        print(f"  package:      {state_label_plain(package)}")
+        print(f"  command:      {state_label_plain(command)}")
+        print(f"  updater:      {state_label_plain(updater)}")
+        print(f"  service:      {state_label_plain(service)}")
+        if handler.returncode == 0:
+            print(f"  codex://      {handler.stdout.strip() or 'unknown'}")
         return
-    if action == "pull":
-        codex_gui_pull_patch_source()
+    if action == "open":
+        codex_desktop_open()
         return
-    if action == "diff":
-        codex_gui_patch_diff()
+    if action == "check":
+        codex_update_manager_check_now()
         return
-    if action == "install":
-        codex_gui_install_patched()
+    if action == "install-ready":
+        codex_update_manager_install_ready()
         return
     if action == "path":
-        print(CODEX_GUI_PATCH_DIR)
+        path = shutil.which(CODEX_DESKTOP_COMMAND)
+        if path is None:
+            raise SystemExit(f"{CODEX_DESKTOP_COMMAND} not on PATH")
+        print(path)
         return
     raise SystemExit(f"unknown codex action: {action}")
 
@@ -1965,15 +1688,9 @@ class App:
         if self.has_background_jobs():
             self.message = "Background action still running; status refresh will follow."
             return
-        global _codex_gui_auto_fetch_status
         clear_runtime_status()
-        old_auto_fetch = _codex_gui_auto_fetch_status
-        _codex_gui_auto_fetch_status = True
-        try:
-            self.mod_status = {m.name: module_status(m) for m in self.reg}
-            self.step_status = {m.name: [step_status(s) for s in m.steps] for m in self.reg}
-        finally:
-            _codex_gui_auto_fetch_status = old_auto_fetch
+        self.mod_status = {m.name: module_status(m) for m in self.reg}
+        self.step_status = {m.name: [step_status(s) for s in m.steps] for m in self.reg}
 
     # current-context helpers -------------------------------------------------
     def is_all(self):
@@ -2261,13 +1978,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync = sub.add_parser("sync", help="snapshot + commit + push (dotfiles-sync)")
     p_sync.add_argument("args", nargs=argparse.REMAINDER, help="passed to dotfiles-sync")
 
-    p_codex = sub.add_parser("codex", help="manage Codex patch source and patched GUI builds")
+    p_codex = sub.add_parser("codex", help="inspect and open the Codex Desktop package")
     p_codex.add_argument(
         "action",
         nargs="?",
         default="status",
-        choices=("status", "pull", "diff", "install", "path"),
-        help="status, pull gist updates, show pending diff, or patch + install",
+        choices=("status", "open", "check", "install-ready", "path"),
+        help="status, open app, check updates, install ready update, or print path",
     )
 
     p_npm = sub.add_parser("npm", help="manage tracked npm global packages")

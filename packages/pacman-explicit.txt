@@ -44,7 +44,7 @@ chwd
 claude-desktop-bin
 cliphist
 cmake
-codex-app-unofficial
+codex-desktop
 cpio
 cpupower
 cryptsetup

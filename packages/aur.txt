@@ -1,5 +1,4 @@
 claude-desktop-bin
-codex-app-unofficial
 geocode-glib-2
 geocode-glib-common
 google-chrome
