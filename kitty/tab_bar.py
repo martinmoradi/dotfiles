@@ -29,7 +29,7 @@ def _clean_title(title):
 
 
 def draw_title(data):
-    """Return ``<index> <directory> · <task>`` for Kitty's {custom} field."""
+    """Return ``<index>/ <directory> | <task>`` for Kitty's {custom} field."""
     index = str(data.get("index", "")).strip()
     tab = data.get("tab")
     cwd = getattr(tab, "active_oldest_wd", "") if tab else ""
@@ -42,7 +42,10 @@ def draw_title(data):
     if SHELL_TITLE.fullmatch(title) or title in {cwd, directory}:
         title = ""
 
-    identity = " ".join(part for part in (index, directory) if part)
+    if index and directory:
+        identity = f"{index}/ {directory}"
+    else:
+        identity = index or directory
     if identity and title:
-        return f"{identity} · {title}"
+        return f"{identity} | {title}"
     return identity or title
